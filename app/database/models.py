@@ -4261,3 +4261,31 @@ class UserDeviceAlias(Base):
     alias = Column(String(64), nullable=False)
     created_at = Column(AwareDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(AwareDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AIConversation(Base):
+    """Состояние диалога пользователя с ИИ-ассистентом поддержки.
+
+    Одна строка на пользователя. Хранит скользящее саммари переписки (для
+    экономии токенов), счётчик сообщений пользователя (для суммаризации каждые
+    N сообщений), несколько последних реплик и служебные метки для лимитов.
+    """
+
+    __tablename__ = 'ai_conversations'
+    __table_args__ = (
+        UniqueConstraint('user_id', name='uq_ai_conversations_user'),
+        Index('ix_ai_conversations_user_id', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    summary = Column(Text, nullable=False, default='', server_default='')
+    recent_messages = Column(JSONB, nullable=False, default=list, server_default='[]')
+    user_message_count = Column(Integer, nullable=False, default=0, server_default='0')
+    total_messages = Column(Integer, nullable=False, default=0, server_default='0')
+    messages_today = Column(Integer, nullable=False, default=0, server_default='0')
+    day_bucket = Column(String(10), nullable=True)
+    handed_off = Column(Boolean, nullable=False, default=False, server_default='false')
+    last_message_at = Column(AwareDateTime(), nullable=True)
+    created_at = Column(AwareDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False)

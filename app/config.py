@@ -43,6 +43,29 @@ class Settings(BaseSettings):
     SUPPORT_TICKET_SLA_CHECK_INTERVAL_SECONDS: int = 60
     SUPPORT_TICKET_SLA_REMINDER_COOLDOWN_MINUTES: int = 15
 
+    # AI-ассистент поддержки (OpenAI-совместимый API: OpenAI, DeepSeek, OpenRouter и т.п.)
+    AI_ASSISTANT_ENABLED: bool = False
+    AI_ASSISTANT_API_KEY: str = ''
+    AI_ASSISTANT_BASE_URL: str = 'https://api.openai.com/v1'
+    AI_ASSISTANT_MODEL: str = 'gpt-4o-mini'
+    AI_ASSISTANT_SUMMARY_MODEL: str = ''  # если пусто — используется AI_ASSISTANT_MODEL
+    AI_ASSISTANT_TEMPERATURE: float = 0.4
+    AI_ASSISTANT_MAX_TOKENS: int = 500
+    AI_ASSISTANT_SUMMARY_MAX_TOKENS: int = 220
+    AI_ASSISTANT_TIMEOUT_SECONDS: int = 40
+    # Экономия токенов
+    AI_ASSISTANT_SUMMARIZE_EVERY: int = 3  # суммировать переписку каждые N сообщений пользователя
+    AI_ASSISTANT_HISTORY_LIMIT: int = 6  # сколько последних реплик держать в контексте (не считая summary)
+    AI_ASSISTANT_KB_TOP_K: int = 3  # сколько записей базы знаний подмешивать в контекст
+    AI_ASSISTANT_MAX_INPUT_CHARS: int = 1200  # обрезка входящего сообщения пользователя
+    AI_ASSISTANT_DAILY_MESSAGE_LIMIT: int = 40  # лимит сообщений ИИ на пользователя в сутки (0 — без лимита)
+    AI_ASSISTANT_MIN_INTERVAL_SECONDS: int = 2  # анти-спам между сообщениями к ИИ
+    # Поведение
+    AI_ASSISTANT_KB_PATH: str = 'app/data/ai/knowledge_base.json'
+    AI_ASSISTANT_COMPANY_NAME: str = 'SligVPN'
+    AI_ASSISTANT_BOT_USERNAME: str = ''  # если пусто — берётся BOT_USERNAME
+    AI_ASSISTANT_HANDOFF_KEYWORD: str = 'оператор'  # слово для вызова живого оператора
+
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp
     MINIAPP_SUPPORT_TYPE: str = 'tickets'  # one of: tickets, profile, url
@@ -3331,6 +3354,17 @@ class Settings(BaseSettings):
 
     def is_support_contact_enabled(self) -> bool:
         return self.get_support_system_mode() in {'contact', 'both'}
+
+    def is_ai_assistant_enabled(self) -> bool:
+        return bool(self.AI_ASSISTANT_ENABLED) and bool((self.AI_ASSISTANT_API_KEY or '').strip())
+
+    def get_ai_assistant_summary_model(self) -> str:
+        model = (self.AI_ASSISTANT_SUMMARY_MODEL or '').strip()
+        return model or self.AI_ASSISTANT_MODEL
+
+    def get_ai_assistant_bot_username(self) -> str:
+        username = (self.AI_ASSISTANT_BOT_USERNAME or '').strip() or (self.BOT_USERNAME or '').strip()
+        return username.lstrip('@')
 
     # MiniApp tickets settings
     def is_miniapp_tickets_enabled(self) -> bool:

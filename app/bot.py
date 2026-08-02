@@ -6,6 +6,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 
 from app.config import settings
 from app.handlers import (
+    ai_support,
     balance,
     common,
     contests as user_contests,
@@ -183,6 +184,7 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     promocode.register_handlers(dp)
     referral.register_handlers(dp)
     support.register_handlers(dp)
+    ai_support.register_handlers(dp)
     server_status.register_handlers(dp)
     tickets.register_handlers(dp)
     admin_main.register_handlers(dp)

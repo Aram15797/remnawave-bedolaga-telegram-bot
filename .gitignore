@@ -92,6 +92,8 @@ docker-compose.override.yml
 # Runtime data
 logs/
 data/
+!app/data/
+!app/data/**
 *.log
 *.db
 *.sqlite3

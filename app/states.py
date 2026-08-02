@@ -35,6 +35,10 @@ class SubscriptionStates(StatesGroup):
     renaming_device = State()
 
 
+class AIAssistantStates(StatesGroup):
+    chatting = State()
+
+
 class BalanceStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_pal24_method = State()

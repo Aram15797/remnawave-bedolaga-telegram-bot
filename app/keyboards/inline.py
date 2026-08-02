@@ -2288,6 +2288,19 @@ def get_support_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMark
         tickets_enabled = True
         contact_enabled = True
     rows: list[list[InlineKeyboardButton]] = []
+    # AI assistant
+    try:
+        ai_enabled = settings.is_ai_assistant_enabled()
+    except Exception:
+        ai_enabled = False
+    if ai_enabled:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('AI_ASSISTANT_BUTTON', '🤖 ИИ-помощник'), callback_data='ai_assistant'
+                )
+            ]
+        )
     # Tickets
     if tickets_enabled:
         rows.append(
