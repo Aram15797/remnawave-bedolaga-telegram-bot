@@ -338,9 +338,10 @@ async def create_external_stars_order(
     try:
         from app.services.steam_top_up_client import SteamTopUpError, steam_top_up_client
 
+        stars_amount = max(50, request.stars_amount)
         result = await steam_top_up_client.create_stars_order(
             username=username,
-            stars_amount=request.stars_amount,
+            stars_amount=stars_amount,
             source='finess',
         )
         return ExternalStarsBuyResponse(
