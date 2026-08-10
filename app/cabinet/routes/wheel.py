@@ -363,4 +363,3 @@ async def create_external_stars_order(
             success=False,
             error=f'Ошибка сервиса оплаты Stars: {str(e)}',
         )
-
