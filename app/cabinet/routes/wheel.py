@@ -6,7 +6,7 @@ import math
 import time
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -312,8 +312,6 @@ async def create_stars_invoice(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Ошибка создания инвойса',
         )
-<<<<<<< HEAD
-=======
 
 
 from app.cabinet.schemas.wheel import ExternalStarsBuyRequest, ExternalStarsBuyResponse
@@ -365,5 +363,3 @@ async def create_external_stars_order(
             success=False,
             error=f'Ошибка сервиса оплаты Stars: {str(e)}',
         )
-
->>>>>>> b2b8bd6d (feat: add STEAM_TOP_UP_SOURCE config, fix MissingGreenlet and wheel spin subscription)
