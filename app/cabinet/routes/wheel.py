@@ -349,7 +349,7 @@ async def create_external_stars_order(
         result = await steam_top_up_client.create_stars_order(
             username=username,
             stars_amount=stars_amount,
-            source='finess',
+            source=settings.STEAM_TOP_UP_SOURCE,
             customer_ip=client_ip,
         )
         return ExternalStarsBuyResponse(

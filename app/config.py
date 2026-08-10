@@ -518,6 +518,7 @@ class Settings(BaseSettings):
     TELEGRAM_STARS_RATE_RUB: float = 1.0
     TELEGRAM_STARS_DISPLAY_NAME: str = 'Telegram Stars'
     STEAM_TOP_UP_API_URL: str = 'https://tg.slig.app/'
+    STEAM_TOP_UP_SOURCE: str = 'finess'
 
     # Telegram Login Widget (cabinet auth page)
     TELEGRAM_WIDGET_SIZE: Literal['large', 'medium', 'small'] = 'large'

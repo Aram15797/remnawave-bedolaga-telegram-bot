@@ -17,20 +17,21 @@ class SteamTopUpClient:
         self,
         username: str,
         stars_amount: int,
-        source: str = 'finess',
+        source: str | None = None,
         customer_ip: str | None = None,
     ) -> dict:
         """
         Calls Steam Top Up API to create a Stars order.
         Returns dict with 'payment_url' and 'order_id'.
         """
+        source_val = source or getattr(settings, 'STEAM_TOP_UP_SOURCE', 'finess')
         clean_username = username.lstrip('@')
         url = f"{self.base_url}/api/telegram/order"
         payload = {
             "product": "stars",
             "username": clean_username,
             "stars_amount": stars_amount,
-            "source": source,
+            "source": source_val,
         }
         if customer_ip:
             payload["customer_ip"] = customer_ip
