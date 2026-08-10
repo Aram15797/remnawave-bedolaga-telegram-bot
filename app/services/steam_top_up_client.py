@@ -14,7 +14,11 @@ class SteamTopUpClient:
         self.base_url = (base_url or settings.STEAM_TOP_UP_API_URL or 'https://tg.slig.app/').rstrip('/')
 
     async def create_stars_order(
-        self, username: str, stars_amount: int, source: str = 'finess'
+        self,
+        username: str,
+        stars_amount: int,
+        source: str = 'finess',
+        customer_ip: str | None = None,
     ) -> dict:
         """
         Calls Steam Top Up API to create a Stars order.
@@ -28,6 +32,8 @@ class SteamTopUpClient:
             "stars_amount": stars_amount,
             "source": source,
         }
+        if customer_ip:
+            payload["customer_ip"] = customer_ip
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             try:

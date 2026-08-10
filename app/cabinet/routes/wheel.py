@@ -6,7 +6,7 @@ import math
 import time
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -320,6 +320,7 @@ from app.cabinet.schemas.wheel import ExternalStarsBuyRequest, ExternalStarsBuyR
 @router.post('/buy-stars-external', response_model=ExternalStarsBuyResponse)
 async def create_external_stars_order(
     request: ExternalStarsBuyRequest,
+    http_request: Request,
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
@@ -338,11 +339,18 @@ async def create_external_stars_order(
     try:
         from app.services.steam_top_up_client import SteamTopUpError, steam_top_up_client
 
+        x_forwarded = http_request.headers.get("x-forwarded-for")
+        if x_forwarded:
+            client_ip = x_forwarded.split(",")[0].strip()
+        else:
+            client_ip = http_request.headers.get("x-real-ip") or (http_request.client.host if http_request.client else None)
+
         stars_amount = max(50, request.stars_amount)
         result = await steam_top_up_client.create_stars_order(
             username=username,
             stars_amount=stars_amount,
             source='finess',
+            customer_ip=client_ip,
         )
         return ExternalStarsBuyResponse(
             success=True,
