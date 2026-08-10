@@ -235,32 +235,51 @@ def _is_checkable(record: PendingPayment) -> bool:
     return False
 
 
+def _safe_getattr(obj: object | None, attr: str, default: object = None) -> object:
+    """Safely get an attribute from a SQLAlchemy model instance without triggering lazy load IO."""
+    if obj is None:
+        return default
+    if hasattr(obj, '__dict__') and attr in obj.__dict__:
+        return obj.__dict__[attr]
+    try:
+        return getattr(obj, attr, default)
+    except Exception:
+        return default
+
+
 def _get_payment_url(record: PendingPayment) -> str | None:
     """Extract payment URL from record."""
     payment = record.payment
-    payment_url = getattr(payment, 'payment_url', None)
+    if not payment:
+        return None
+
+    payment_url = _safe_getattr(payment, 'payment_url')
 
     if record.method == PaymentMethod.PAL24:
-        payment_url = getattr(payment, 'link_url', None) or getattr(payment, 'link_page_url', None) or payment_url
+        payment_url = (
+            _safe_getattr(payment, 'link_url')
+            or _safe_getattr(payment, 'link_page_url')
+            or payment_url
+        )
     elif record.method == PaymentMethod.WATA:
-        payment_url = getattr(payment, 'url', None) or payment_url
+        payment_url = _safe_getattr(payment, 'url') or payment_url
     elif record.method == PaymentMethod.YOOKASSA:
-        payment_url = getattr(payment, 'confirmation_url', None) or payment_url
+        payment_url = _safe_getattr(payment, 'confirmation_url') or payment_url
     elif record.method == PaymentMethod.CRYPTOBOT:
         payment_url = (
-            getattr(payment, 'bot_invoice_url', None)
-            or getattr(payment, 'mini_app_invoice_url', None)
-            or getattr(payment, 'web_app_invoice_url', None)
+            _safe_getattr(payment, 'bot_invoice_url')
+            or _safe_getattr(payment, 'mini_app_invoice_url')
+            or _safe_getattr(payment, 'web_app_invoice_url')
             or payment_url
         )
     elif record.method == PaymentMethod.PLATEGA:
-        payment_url = getattr(payment, 'redirect_url', None) or payment_url
+        payment_url = _safe_getattr(payment, 'redirect_url') or payment_url
     elif record.method == PaymentMethod.CLOUDPAYMENTS or record.method == PaymentMethod.FREEKASSA:
-        payment_url = getattr(payment, 'payment_url', None) or payment_url
+        payment_url = _safe_getattr(payment, 'payment_url') or payment_url
 
-    if payment_url and not payment_url.startswith(('https://', 'http://')):
+    if payment_url and isinstance(payment_url, str) and not payment_url.startswith(('https://', 'http://')):
         return None
-    return payment_url
+    return payment_url if isinstance(payment_url, str) else None
 
 
 def _extract_decline_reason(record: PendingPayment) -> str | None:
@@ -273,7 +292,7 @@ def _extract_decline_reason(record: PendingPayment) -> str | None:
         return None
     import json as _json
 
-    raw = getattr(payment, 'callback_payload', None)
+    raw = _safe_getattr(payment, 'callback_payload')
     data = None
     if isinstance(raw, dict):
         data = raw
@@ -299,6 +318,7 @@ def _extract_decline_reason(record: PendingPayment) -> str | None:
 def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
     """Convert PendingPayment to API response."""
     status_emoji, status_text = _get_status_info(record)
+    user = record.user
     return PendingPaymentResponse(
         id=record.local_id,
         method=record.method.value,
@@ -314,10 +334,10 @@ def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
         created_at=record.created_at,
         expires_at=record.expires_at,
         payment_url=_get_payment_url(record),
-        user_id=record.user.id if record.user else None,
-        user_telegram_id=record.user.telegram_id if record.user else None,
-        user_username=record.user.username if record.user else None,
-        user_email=record.user.email if record.user else None,
+        user_id=_safe_getattr(user, 'id'),
+        user_telegram_id=_safe_getattr(user, 'telegram_id'),
+        user_username=_safe_getattr(user, 'username'),
+        user_email=_safe_getattr(user, 'email'),
         decline_reason=_extract_decline_reason(record),
     )
 
