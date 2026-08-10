@@ -283,3 +283,24 @@ class WheelStatisticsResponse(BaseModel):
     top_wins: list[dict]
     period_from: str | None = None
     period_to: str | None = None
+
+
+# ==================== EXTERNAL BUY SCHEMAS ====================
+
+
+class ExternalStarsBuyRequest(BaseModel):
+    """Запрос на покупку Stars через сторонний сервис (Steam Top Up)."""
+
+    stars_amount: int = Field(default=50, ge=1)
+    username: str | None = None  # Опциональный юзернейм, если у пользователя в Telegram его нет
+
+
+class ExternalStarsBuyResponse(BaseModel):
+    """Ответ со ссылкой на оплату покупки Stars."""
+
+    success: bool
+    payment_url: str | None = None
+    order_id: str | None = None
+    requires_username: bool = False
+    error: str | None = None
+
