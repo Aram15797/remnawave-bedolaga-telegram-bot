@@ -142,7 +142,7 @@ async def _handle_wheel_spin_payment(
         selected_prize = wheel_service._select_prize(prizes_with_probs)
 
         # Применяем приз
-        generated_promocode = await wheel_service._apply_prize(db, user, selected_prize, config)
+        generated_promocode = await wheel_service._apply_prize(db, user, selected_prize, config, subscription)
 
         # Создаем запись спина
         from sqlalchemy.exc import IntegrityError
