@@ -312,11 +312,17 @@ class SubscriptionService:
                             'сохраняем подписку без записи users.remnawave_id',
                             remnawave_id=updated_user.id,
                         )
-                        # Убираем значение, которое нарушает unique constraint
-                        user.remnawave_id = None
-                        # Сбрасываем pending изменения user и перезаписываем только подписочные поля
-                        db.expunge(user)
+                        # Восстанавливаем изменения подписки, стёртые rollback-ом,
+                        # чтобы коммит ниже их сохранил. Пользователя не отвязываем (expunge),
+                        # чтобы внешний код мог безопасно сделать db.refresh().
+                        subscription.remnawave_short_uuid = updated_user.short_uuid
+                        subscription.subscription_url = updated_user.subscription_url
+                        subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                        if await self._panel_id_is_free_for(db, subscription, updated_user.id):
+                            subscription.remnawave_id = updated_user.id
+
                         await db.commit()
+                        await db.refresh(subscription)
                     else:
                         raise
 
