@@ -801,6 +801,7 @@ class RemnaWaveAPI:
     async def update_user(
         self,
         user_id: int,
+        username: str | None = None,
         status: UserStatus | None = None,
         traffic_limit_bytes: int | None = None,
         traffic_limit_strategy: TrafficLimitStrategy | None = None,
@@ -813,11 +814,13 @@ class RemnaWaveAPI:
         active_internal_squads: list[str] | None = None,
         external_squad_uuid: str | None | type(...) = ...,
     ) -> RemnaWaveUser:
-        # 3.0.0: UpdateUserCommand.RequestBodySchema не имеет поля `uuid`, а
-        # .refine((d) => d.username ?? d.id) требует хотя бы один из двух —
-        # неизвестный ключ zod срезает молча, и запрос падает в 400.
+        # 3.0.0: UpdateUserCommand.RequestBodySchema .refine((d) => d.uuid ?? d.username)
+        # требует хотя бы одно из username/uuid вместе с id, иначе 400.
+        # uuid удалён из схемы в 3.0.0, поэтому передаём username.
         panel_user_id = coerce_panel_user_id(user_id)
-        data = {'id': panel_user_id}
+        data: dict = {'id': panel_user_id}
+        if username:
+            data['username'] = username
 
         if status:
             data['status'] = status.value

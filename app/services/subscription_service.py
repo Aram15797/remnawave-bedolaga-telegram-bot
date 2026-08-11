@@ -221,8 +221,11 @@ class SubscriptionService:
                         )
                         await db.commit()
                         return None
+                    _grace_panel_user = await api.get_user_by_id(remnawave_id)
+                    _grace_username = _grace_panel_user.username if _grace_panel_user else None
                     metadata_kwargs: dict[str, Any] = {
                         'user_id': remnawave_id,
+                        'username': _grace_username,
                         'description': settings.format_remnawave_user_description(
                             full_name=user.full_name,
                             username=user.username,
@@ -471,7 +474,7 @@ class SubscriptionService:
                         if not await api.reset_user_devices(existing.id):
                             logger.error('⚠️ Не удалось сбросить HWID', panel_user_id=existing.id)
 
-                    updated = await api.update_user(user_id=existing.id, **common_kwargs)
+                    updated = await api.update_user(user_id=existing.id, username=existing.username, **common_kwargs)
                     if reset_traffic:
                         await self._reset_user_traffic(api, updated.id, user, reset_reason)
                     return updated
@@ -512,7 +515,7 @@ class SubscriptionService:
             if settings.RESET_DEVICES_ON_RENEWAL:
                 if not await api.reset_user_devices(adopted.id):
                     logger.error('⚠️ Не удалось сбросить HWID', panel_user_id=adopted.id)
-            updated = await api.update_user(user_id=adopted.id, **common_kwargs)
+            updated = await api.update_user(user_id=adopted.id, username=adopted.username, **common_kwargs)
             if reset_traffic:
                 await self._reset_user_traffic(api, updated.id, user, reset_reason)
             return updated
@@ -667,7 +670,7 @@ class SubscriptionService:
                 else:
                     logger.error('⚠️ Не удалось сбросить HWID', panel_user_id=remnawave_user.id)
 
-            updated_user = await api.update_user(user_id=remnawave_user.id, **common_kwargs)
+            updated_user = await api.update_user(user_id=remnawave_user.id, username=remnawave_user.username, **common_kwargs)
             if reset_traffic:
                 await self._reset_user_traffic(api, updated_user.id, user, reset_reason)
             return updated_user
@@ -746,8 +749,11 @@ class SubscriptionService:
                     subscription_id=subscription.id,
                 )
                 async with self.get_api_client() as api:
+                    _grace_panel_user = await api.get_user_by_id(remnawave_id)
+                    _grace_username = _grace_panel_user.username if _grace_panel_user else None
                     metadata_kwargs: dict[str, Any] = {
                         'user_id': remnawave_id,
+                        'username': _grace_username,
                         'description': settings.format_remnawave_user_description(
                             full_name=user.full_name,
                             username=user.username,
@@ -806,8 +812,13 @@ class SubscriptionService:
             async with self.get_api_client() as api:
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
 
+                # Получаем username из панели для PATCH (RemnaWave 3.0.0 требует username или uuid)
+                _panel_user_for_name = await api.get_user_by_id(remnawave_id)
+                _panel_username = _panel_user_for_name.username if _panel_user_for_name else None
+
                 update_kwargs = dict(
                     user_id=remnawave_id,
+                    username=_panel_username,
                     status=UserStatus.ACTIVE if is_actually_active else UserStatus.DISABLED,
                     expire_at=subscription.end_date
                     if is_actually_active
