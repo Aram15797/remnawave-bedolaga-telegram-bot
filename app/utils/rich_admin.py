@@ -23,7 +23,11 @@ from datetime import UTC, datetime
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNotFound
-from aiogram.types import InlineKeyboardMarkup, InputRichMessage
+from aiogram.types import InlineKeyboardMarkup
+try:
+    from aiogram.types import InputRichMessage
+except ImportError:
+    InputRichMessage = None
 
 from app.config import settings
 from app.utils.rich_menu import _looks_like_unsupported
@@ -53,7 +57,7 @@ _PRE_SPLIT_RE = re.compile(r'(<pre>.*?</pre>)', re.IGNORECASE | re.DOTALL)
 
 
 def is_rich_admin_enabled() -> bool:
-    return bool(settings.ADMIN_NOTIFICATIONS_RICH_ENABLED) and not _rich_unavailable
+    return bool(settings.ADMIN_NOTIFICATIONS_RICH_ENABLED) and InputRichMessage is not None and not _rich_unavailable
 
 
 def _reset_rich_admin_availability() -> None:

@@ -35,9 +35,13 @@ from aiogram.types import (
     CallbackQuery,
     InaccessibleMessage,
     InlineKeyboardMarkup,
-    InputRichMessage,
     Message,
 )
+try:
+    from aiogram.types import InputRichMessage
+except ImportError:
+    InputRichMessage = None
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings

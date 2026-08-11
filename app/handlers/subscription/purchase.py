@@ -216,6 +216,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
 
     subscription = await check_and_update_subscription_status(db, subscription)
 
+    sub_id = subscription.id
     subscription_service = SubscriptionService()
     await subscription_service.sync_subscription_usage(db, subscription)
 
@@ -223,11 +224,14 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
     sync_success, sync_error = await subscription_service.ensure_subscription_synced(db, subscription)
     if not sync_success:
         logger.warning(
-            'Не удалось синхронизировать подписку с RemnaWave', subscription_id=subscription.id, sync_error=sync_error
+            'Не удалось синхронизировать подписку с RemnaWave', subscription_id=sub_id, sync_error=sync_error
         )
 
-    await db.refresh(subscription)
-    await db.refresh(db_user)
+    try:
+        await db.refresh(subscription)
+        await db.refresh(db_user)
+    except Exception as refresh_err:
+        logger.warning('Не удалось обновить подписку/пользователя после синхронизации', error=refresh_err)
 
     current_time = datetime.now(UTC)
 

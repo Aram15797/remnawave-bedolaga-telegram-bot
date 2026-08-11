@@ -927,6 +927,13 @@ class SubscriptionService:
         Только для действующих подписок: пересоздавать DISABLED-юзера ради
         истёкшей подписки не нужно — админ удалил его намеренно.
         """
+        sub_id = subscription.__dict__.get('id') or getattr(subscription, 'id', None)
+        user_id = subscription.__dict__.get('user_id') or getattr(subscription, 'user_id', None)
+        try:
+            await db.refresh(subscription)
+        except Exception:
+            pass
+
         is_actually_active = subscription.status in (
             SubscriptionStatus.ACTIVE.value,
             SubscriptionStatus.TRIAL.value,
@@ -934,15 +941,15 @@ class SubscriptionService:
         if not is_actually_active:
             logger.info(
                 'Панель-юзер удалён из RemnaWave, подписка неактивна — пересоздание не требуется',
-                subscription_id=subscription.id,
-                user_id=subscription.user_id,
+                subscription_id=sub_id,
+                user_id=user_id,
             )
             return None
 
         logger.warning(
             '⚠️ Панель-юзер удалён из RemnaWave при активной подписке — пересоздаём',
-            subscription_id=subscription.id,
-            user_id=subscription.user_id,
+            subscription_id=sub_id,
+            user_id=user_id,
         )
         return await self.create_remnawave_user(
             db, subscription, reset_traffic=reset_traffic, reset_reason=reset_reason
@@ -1162,10 +1169,11 @@ class SubscriptionService:
         Returns:
             Tuple[bool, Optional[str]]: (успех, сообщение об ошибке)
         """
+        sub_id = subscription.__dict__.get('id') or getattr(subscription, 'id', None)
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
-                logger.error('Пользователь не найден для подписки', subscription_id=subscription.id)
+                logger.error('Пользователь не найден для подписки', subscription_id=sub_id)
                 return False, 'user_not_found'
 
             # Проверяем, нужна ли синхронизация
@@ -1192,7 +1200,7 @@ class SubscriptionService:
 
             logger.info(
                 'Синхронизация подписки с RemnaWave',
-                subscription_id=subscription.id,
+                subscription_id=sub_id,
                 subscription_url=bool(subscription.subscription_url),
                 remnawave_id=bool(panel_user_id),
             )
@@ -1237,24 +1245,27 @@ class SubscriptionService:
                 )
 
             if result:
-                await db.refresh(subscription)
-                await db.refresh(user)
+                try:
+                    await db.refresh(subscription)
+                    await db.refresh(user)
+                except Exception:
+                    pass
                 logger.info(
                     'Подписка успешно синхронизирована с RemnaWave. URL',
-                    subscription_id=subscription.id,
-                    subscription_url=subscription.subscription_url,
+                    subscription_id=sub_id,
+                    subscription_url=getattr(subscription, 'subscription_url', None),
                 )
                 return True, None
-            logger.error('Не удалось синхронизировать подписку с RemnaWave', subscription_id=subscription.id)
+            logger.error('Не удалось синхронизировать подписку с RemnaWave', subscription_id=sub_id)
             return False, 'sync_failed'
 
         except RemnaWaveAPIError as api_error:
             logger.error(
-                'Ошибка RemnaWave API при синхронизации подписки', subscription_id=subscription.id, api_error=api_error
+                'Ошибка RemnaWave API при синхронизации подписки', subscription_id=sub_id, api_error=api_error
             )
             return False, 'api_error'
         except Exception as e:
-            logger.error('Ошибка синхронизации подписки', subscription_id=subscription.id, error=e)
+            logger.error('Ошибка синхронизации подписки', subscription_id=sub_id, error=e)
             return False, 'unknown_error'
 
     async def validate_and_clean_subscription(self, db: AsyncSession, subscription: Subscription, user: User) -> bool:
