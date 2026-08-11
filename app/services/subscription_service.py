@@ -25,6 +25,7 @@ from app.external.remnawave_api import (
 )
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
+    safe_get_attr,
 )
 
 
@@ -139,7 +140,7 @@ class SubscriptionService:
 
     @staticmethod
     def _resolve_user_tag(subscription: Subscription) -> str | None:
-        if getattr(subscription, 'is_trial', False):
+        if safe_get_attr(subscription, 'is_trial', False):
             return settings.get_trial_user_tag()
 
         return settings.get_paid_subscription_user_tag()
@@ -326,7 +327,7 @@ class SubscriptionService:
                     else:
                         raise
 
-                logger.info('✅ Создан/обновлен RemnaWave пользователь для подписки', subscription_id=subscription.id)
+                logger.info('✅ Создан/обновлен RemnaWave пользователь для подписки', subscription_id=safe_get_attr(subscription, 'id', None))
                 logger.info('🔗 Ссылка на подписку', subscription_url=updated_user.subscription_url)
                 strategy_name = settings.DEFAULT_TRAFFIC_RESET_STRATEGY
                 logger.info('📊 Стратегия сброса трафика', strategy_name=strategy_name)
@@ -355,7 +356,7 @@ class SubscriptionService:
         честно создаёт нового пользователя. Транзиентную ошибку пробрасываем:
         «панель моргнула» не должно превращаться в дубль аккаунта.
         """
-        short_uuid = (getattr(subscription, 'remnawave_short_uuid', None) or '').strip()
+        short_uuid = (safe_get_attr(subscription, 'remnawave_short_uuid', None) or '').strip()
         if not short_uuid:
             return None
         # Отсутствие аккаунта доказывает ТОЛЬКО 404 (его `get_user_by_short_uuid`
@@ -368,7 +369,7 @@ class SubscriptionService:
             return None
         logger.info(
             '🔗 Панельный пользователь опознан по short_uuid — дубль не создаём',
-            subscription_id=getattr(subscription, 'id', None),
+            subscription_id=safe_get_attr(subscription, 'id', None),
             remnawave_id=panel_user.id,
         )
         return panel_user
@@ -382,16 +383,11 @@ class SubscriptionService:
         """
         if panel_id is None:
             return False
-        other = (
-            await db.execute(
-                select(Subscription.id)
-                .where(
-                    Subscription.remnawave_id == int(panel_id),
-                    Subscription.id != getattr(subscription, 'id', None),
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        sub_id = subscription if isinstance(subscription, int) else safe_get_attr(subscription, 'id', None)
+        query = select(Subscription.id).where(Subscription.remnawave_id == int(panel_id))
+        if sub_id is not None:
+            query = query.where(Subscription.id != sub_id)
+        other = (await db.execute(query.limit(1))).scalar_one_or_none()
         return other is None
 
     async def _adopt_panel_id_for_update(self, db: AsyncSession, subscription, user, multi_tariff: bool) -> int | None:
@@ -402,7 +398,7 @@ class SubscriptionService:
         опознать нечем или панель этот shortUuid не знает — тогда вызывающий
         честно откажется от обновления.
         """
-        short_uuid = (getattr(subscription, 'remnawave_short_uuid', None) or '').strip()
+        short_uuid = (safe_get_attr(subscription, 'remnawave_short_uuid', None) or '').strip()
         if not short_uuid:
             return None
         try:
@@ -412,7 +408,7 @@ class SubscriptionService:
             # Транзиент/деградация панели — не повод считать, что аккаунта нет.
             logger.warning(
                 '⚠️ Не удалось опознать панельного пользователя по short_uuid для обновления',
-                subscription_id=getattr(subscription, 'id', None),
+                subscription_id=safe_get_attr(subscription, 'id', None),
                 error=error,
             )
             return None
@@ -421,7 +417,7 @@ class SubscriptionService:
 
         logger.info(
             '🔗 Панельный id восстановлен по short_uuid при обновлении',
-            subscription_id=getattr(subscription, 'id', None),
+            subscription_id=safe_get_attr(subscription, 'id', None),
             remnawave_id=adopted.id,
         )
         if multi_tariff:
@@ -433,7 +429,7 @@ class SubscriptionService:
             if not await self._panel_id_is_free_for(db, subscription, adopted.id):
                 logger.warning(
                     '⚠️ Панельный id уже закреплён за другой подпиской — обновление отменено',
-                    subscription_id=getattr(subscription, 'id', None),
+                    subscription_id=safe_get_attr(subscription, 'id', None),
                     remnawave_id=adopted.id,
                 )
                 return None
@@ -503,7 +499,11 @@ class SubscriptionService:
                         if not await api.reset_user_devices(existing.id):
                             logger.error('⚠️ Не удалось сбросить HWID', panel_user_id=existing.id)
 
-                    updated = await api.update_user(user_id=existing.id, username=existing.username, **common_kwargs)
+                    updated = await api.update_user(
+                        user_id=existing.id,
+                        username=safe_get_attr(existing, 'username', None),
+                        **common_kwargs,
+                    )
                     if reset_traffic:
                         await self._reset_user_traffic(api, updated.id, user, reset_reason)
                     return updated
@@ -520,8 +520,8 @@ class SubscriptionService:
             except Exception:
                 logger.warning(
                     '⚠️ Не удалось найти Remnawave юзера по id подписки, создаём нового',
-                    subscription_id=subscription.id,
-                    remnawave_id=subscription.remnawave_id,
+                    subscription_id=safe_get_attr(subscription, 'id', None),
+                    remnawave_id=safe_get_attr(subscription, 'remnawave_id', None),
                 )
 
         # Строка могла быть привязана к панели ДО апгрейда на 3.0.0: числового
@@ -538,13 +538,17 @@ class SubscriptionService:
             else:
                 logger.warning(
                     '⚠️ Панельный id уже закреплён за другой подпиской — колонку не трогаем',
-                    subscription_id=getattr(subscription, 'id', None),
+                    subscription_id=safe_get_attr(subscription, 'id', None),
                     remnawave_id=adopted.id,
                 )
             if settings.RESET_DEVICES_ON_RENEWAL:
                 if not await api.reset_user_devices(adopted.id):
                     logger.error('⚠️ Не удалось сбросить HWID', panel_user_id=adopted.id)
-            updated = await api.update_user(user_id=adopted.id, username=adopted.username, **common_kwargs)
+            updated = await api.update_user(
+                user_id=adopted.id,
+                username=safe_get_attr(adopted, 'username', None),
+                **common_kwargs,
+            )
             if reset_traffic:
                 await self._reset_user_traffic(api, updated.id, user, reset_reason)
             return updated
@@ -559,7 +563,7 @@ class SubscriptionService:
         # возвращает одного и того же пользователя → общий HWID-лимит (баг «лимит
         # по наименьшему тарифу»). На пустой/legacy short_id ('' из server_default)
         # падаем на детерминированный per-subscription суффикс по id.
-        short_suffix = subscription.remnawave_short_id or f'sub{subscription.id}'
+        short_suffix = safe_get_attr(subscription, 'remnawave_short_id', None) or f'sub{safe_get_attr(subscription, "id", "")}'
         username = settings.build_remnawave_subscription_username(
             full_name=user.full_name,
             username=user.username,
@@ -605,7 +609,7 @@ class SubscriptionService:
         # пользователя и id самой подписки. Второй бэкфилл заполняет и в
         # single-tariff (например, перенося его на живую строку), а раньше его
         # тут не спрашивали вовсе.
-        for exact_id in (user.remnawave_id, getattr(subscription, 'remnawave_id', None)):
+        for exact_id in (safe_get_attr(user, 'remnawave_id', None), safe_get_attr(subscription, 'remnawave_id', None)):
             if existing_users or not exact_id:
                 continue
             try:
@@ -635,7 +639,7 @@ class SubscriptionService:
                 adopted = None
                 logger.warning(
                     '⚠️ Не удалось опознать панельного пользователя по short_uuid — пробуем другие ключи',
-                    subscription_id=getattr(subscription, 'id', None),
+                    subscription_id=safe_get_attr(subscription, 'id', None),
                     error=error,
                 )
             if adopted is not None:
@@ -658,8 +662,8 @@ class SubscriptionService:
         if len(existing_users) > 1:
             logger.warning(
                 '⚠️ У пользователя несколько панельных аккаунтов, точного ключа нет — берём первый',
-                user_id=user.id,
-                subscription_id=getattr(subscription, 'id', None),
+                user_id=safe_get_attr(user, 'id', None),
+                subscription_id=safe_get_attr(subscription, 'id', None),
                 candidates=[u.id for u in existing_users],
             )
 
@@ -699,7 +703,11 @@ class SubscriptionService:
                 else:
                     logger.error('⚠️ Не удалось сбросить HWID', panel_user_id=remnawave_user.id)
 
-            updated_user = await api.update_user(user_id=remnawave_user.id, username=remnawave_user.username, **common_kwargs)
+            updated_user = await api.update_user(
+                user_id=remnawave_user.id,
+                username=safe_get_attr(remnawave_user, 'username', None),
+                **common_kwargs,
+            )
             if reset_traffic:
                 await self._reset_user_traffic(api, updated_user.id, user, reset_reason)
             return updated_user
@@ -967,8 +975,8 @@ class SubscriptionService:
         Только для действующих подписок: пересоздавать DISABLED-юзера ради
         истёкшей подписки не нужно — админ удалил его намеренно.
         """
-        sub_id = subscription.__dict__.get('id') or getattr(subscription, 'id', None)
-        user_id = subscription.__dict__.get('user_id') or getattr(subscription, 'user_id', None)
+        sub_id = safe_get_attr(subscription, 'id', None)
+        user_id = safe_get_attr(subscription, 'user_id', None)
         try:
             await db.refresh(subscription)
         except Exception:
@@ -1209,7 +1217,7 @@ class SubscriptionService:
         Returns:
             Tuple[bool, Optional[str]]: (успех, сообщение об ошибке)
         """
-        sub_id = subscription.__dict__.get('id') or getattr(subscription, 'id', None)
+        sub_id = safe_get_attr(subscription, 'id', None)
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -1293,7 +1301,7 @@ class SubscriptionService:
                 logger.info(
                     'Подписка успешно синхронизирована с RemnaWave. URL',
                     subscription_id=sub_id,
-                    subscription_url=getattr(subscription, 'subscription_url', None),
+                    subscription_url=safe_get_attr(subscription, 'subscription_url', None),
                 )
                 return True, None
             logger.error('Не удалось синхронизировать подписку с RemnaWave', subscription_id=sub_id)
@@ -1685,9 +1693,9 @@ async def reset_subscription_with_panel(db, user: User, subscription: Subscripti
     # на user.remnawave_id (это легаси single-tariff id, иначе можно отключить
     # не того панельного пользователя). В single-tariff fallback на user корректен.
     if settings.is_multi_tariff_enabled():
-        panel_user_id = getattr(subscription, 'remnawave_id', None)
+        panel_user_id = safe_get_attr(subscription, 'remnawave_id', None)
     else:
-        panel_user_id = getattr(subscription, 'remnawave_id', None) or getattr(user, 'remnawave_id', None)
+        panel_user_id = safe_get_attr(subscription, 'remnawave_id', None) or safe_get_attr(user, 'remnawave_id', None)
 
     panel_disabled = False
     if panel_user_id:
@@ -1698,7 +1706,7 @@ async def reset_subscription_with_panel(db, user: User, subscription: Subscripti
     else:
         logger.warning(
             'Обнуление подписки: панельный id не найден, отключение в панели пропущено',
-            subscription_id=getattr(subscription, 'id', None),
+            subscription_id=safe_get_attr(subscription, 'id', None),
         )
 
     await reset_subscription(db, subscription)

@@ -1,3 +1,4 @@
+from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 import structlog
@@ -45,14 +46,51 @@ async def cleanup_duplicate_subscriptions(db: AsyncSession) -> int:
     return total_deleted
 
 
+def safe_get_attr(obj: Any, attr_name: str, default: Any = None) -> Any:
+    """Safely get an attribute from a SQLAlchemy model instance or dict/object
+    without triggering synchronous lazy-loading / _load_expired (which raises
+    MissingGreenlet in an async SQLAlchemy context).
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(attr_name, default)
+    if isinstance(obj, (int, float, str, bool, bytes)):
+        return default
+
+    state = None
+    try:
+        from sqlalchemy import inspect as sa_inspect
+        state = sa_inspect(obj, raiseerr=False)
+        if state is not None:
+            if attr_name == 'id' and getattr(state, 'identity', None):
+                return state.identity[0]
+            if attr_name in state.dict:
+                return state.dict[attr_name]
+            if attr_name in state.unloaded or attr_name in state.expired_attributes:
+                return default
+    except Exception:
+        pass
+
+    if hasattr(obj, '__dict__'):
+        val = obj.__dict__.get(attr_name, default)
+        if val is not default:
+            return val
+
+    if state is None:
+        return getattr(obj, attr_name, default)
+
+    return default
+
+
 def get_display_subscription_link(subscription: Subscription | None) -> str | None:
     if not subscription:
         return None
 
-    base_link = getattr(subscription, 'subscription_url', None)
+    base_link = safe_get_attr(subscription, 'subscription_url', None)
 
     if settings.is_happ_cryptolink_mode():
-        crypto_link = getattr(subscription, 'subscription_crypto_link', None)
+        crypto_link = safe_get_attr(subscription, 'subscription_crypto_link', None)
         return crypto_link or base_link
 
     return base_link
@@ -146,7 +184,7 @@ def resolve_min_device_limit(tariff: object | None = None) -> int:
     if settings.ALLOW_DEVICES_BELOW_TARIFF_LIMIT:
         return 1
 
-    tariff_devices = getattr(tariff, 'device_limit', None) if tariff is not None else None
+    tariff_devices = safe_get_attr(tariff, 'device_limit', None) if tariff is not None else None
     try:
         return max(1, int(tariff_devices or 0))
     except (TypeError, ValueError):
@@ -168,19 +206,19 @@ def resolve_hwid_device_limit(subscription: Subscription | None) -> int | None:
             _logger.info(
                 'DEVICES_SELECTION disabled, using forced limit',
                 forced_limit=forced_limit,
-                subscription_device_limit=getattr(subscription, 'device_limit', None),
-                subscription_id=getattr(subscription, 'id', None),
+                subscription_device_limit=safe_get_attr(subscription, 'device_limit', None),
+                subscription_id=safe_get_attr(subscription, 'id', None),
             )
             return forced_limit
         # forced_limit не задан или равен 0 — используем device_limit из подписки,
         # чтобы при смене тарифа лимит устройств обновлялся в панели
 
-    limit = getattr(subscription, 'device_limit', None)
+    limit = safe_get_attr(subscription, 'device_limit', None)
     if limit is None or limit <= 0:
         _logger.warning(
             'device_limit is None or <= 0, returning None',
             device_limit=limit,
-            subscription_id=getattr(subscription, 'id', None),
+            subscription_id=safe_get_attr(subscription, 'id', None),
         )
         return None
 
@@ -206,26 +244,26 @@ def resolve_hwid_device_limit_for_payload(
         _logger.info(
             'hwid_device_limit resolved',
             resolved_limit=resolved_limit,
-            subscription_id=getattr(subscription, 'id', None),
+            subscription_id=safe_get_attr(subscription, 'id', None),
         )
         return resolved_limit
 
     if subscription is None:
         return None
 
-    fallback_limit = getattr(subscription, 'device_limit', None)
+    fallback_limit = safe_get_attr(subscription, 'device_limit', None)
     if fallback_limit is None or fallback_limit <= 0:
         _logger.warning(
             'fallback device_limit is None or <= 0, NOT sending hwidDeviceLimit to RemnaWave',
             fallback_limit=fallback_limit,
-            subscription_id=getattr(subscription, 'id', None),
+            subscription_id=safe_get_attr(subscription, 'id', None),
         )
         return None
 
     _logger.info(
         'using fallback device_limit',
         fallback_limit=fallback_limit,
-        subscription_id=getattr(subscription, 'id', None),
+        subscription_id=safe_get_attr(subscription, 'id', None),
     )
     return fallback_limit
 
