@@ -140,7 +140,7 @@ async def update_wheel_prize(db: AsyncSession, prize_id: int, **kwargs) -> Wheel
         return None
 
     for key, value in kwargs.items():
-        if hasattr(prize, key) and value is not None:
+        if hasattr(prize, key) and (value is not None or key == 'manual_probability'):
             setattr(prize, key, value)
 
     prize.updated_at = datetime.now(UTC)

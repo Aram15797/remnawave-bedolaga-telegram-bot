@@ -214,9 +214,10 @@ class FortuneWheelService:
         manual_prob_sum = 0.0
 
         for prize in prizes:
-            if prize.manual_probability is not None and prize.manual_probability > 0:
-                manual_prizes.append((prize, prize.manual_probability))
-                manual_prob_sum += prize.manual_probability
+            if prize.manual_probability is not None:
+                prob = max(0.0, prize.manual_probability)
+                manual_prizes.append((prize, prob))
+                manual_prob_sum += prob
             else:
                 auto_prizes.append(prize)
 

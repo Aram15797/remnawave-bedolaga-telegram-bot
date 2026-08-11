@@ -298,12 +298,26 @@ def is_user_not_found_error(error: RemnaWaveAPIError) -> bool:
     пересоздаёт пользователя вместо падения в ошибку.
 
     Коды A018/A063 в 3.0.0 не изменились (сверено с backend-contract@3.0.0).
-    Статус 400 сюда намеренно НЕ входит: см. ``RemnaWaveInvalidUserIdError``.
+    Статус 400 с ошибкой валидации UUID/ID также означает, что в панели пользователь
+    по данному идентификатору не найден (или передан невалидный для панели идентификатор).
     """
     if isinstance(error, RemnaWaveInvalidUserIdError):
-        return False
+        return True
     error_code = ((error.response_data or {}).get('errorCode') or '').strip()
-    return error.status_code == 404 or error_code in ('A018', 'A063')
+    if error.status_code == 404 or error_code in ('A018', 'A063'):
+        return True
+    if error.status_code == 400:
+        resp_data = error.response_data or {}
+        errors = resp_data.get('errors') or []
+        if any(
+            isinstance(err, dict) and (err.get('validation') == 'uuid' or 'uuid' in err.get('path', []))
+            for err in errors
+        ):
+            return True
+        msg_lower = str(error.message).lower()
+        if 'invalid uuid' in msg_lower or 'invalid string' in msg_lower:
+            return True
+    return False
 
 
 # Публичный RSA-ключ Happ для crypt4-ссылок — тот же, которым официальная страница
@@ -528,11 +542,18 @@ class RemnaWaveAPI:
                         is_harmless = response.status == 400 and (
                             'already enabled' in error_lower or 'already disabled' in error_lower
                         )
-                        # 404 = "not found" — это всегда обрабатывает вызывающий код (get_user_by_id
-                        # → None, delete → success, sync → пересоздание). Логировать его как error
+                        # 404 или 400 "Invalid uuid" = "not found" — это всегда обрабатывает вызывающий код
+                        # (get_user_by_id → None, delete → success, sync → пересоздание). Логировать его как error
                         # нельзя: error-логи буферизуются и сыплют отчётом в админ-чат (например, при
                         # просмотре юзера с протухшим panel uuid — A063). Понижаем до warning.
-                        is_not_found = response.status == 404
+                        is_invalid_uuid = response.status == 400 and (
+                            'invalid uuid' in error_lower
+                            or any(
+                                isinstance(err, dict) and (err.get('validation') == 'uuid' or 'uuid' in err.get('path', []))
+                                for err in (response_data.get('errors') or [])
+                            )
+                        )
+                        is_not_found = response.status == 404 or is_invalid_uuid
                         log = (
                             logger.warning
                             if response.status in (502, 503, 504) or is_harmless or is_not_found
@@ -651,13 +672,16 @@ class RemnaWaveAPI:
         return await self.enrich_user_with_happ_link(user)
 
     async def get_user_by_id(self, user_id: int) -> RemnaWaveUser | None:
-        panel_user_id = coerce_panel_user_id(user_id)
+        try:
+            panel_user_id = coerce_panel_user_id(user_id)
+        except RemnaWaveInvalidUserIdError:
+            return None
         try:
             response = await self._make_request('GET', f'/api/users/{panel_user_id}')
             user = self._parse_user(response['response'])
             return await self.enrich_user_with_happ_link(user)
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return None
             raise
 
@@ -673,7 +697,7 @@ class RemnaWaveAPI:
             user = self._parse_user(response['response'])
             return await self.enrich_user_with_happ_link(user)
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return None
             raise
 
@@ -683,7 +707,7 @@ class RemnaWaveAPI:
             user = self._parse_user(response['response'])
             return await self.enrich_user_with_happ_link(user)
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return None
             raise
 
@@ -936,7 +960,10 @@ class RemnaWaveAPI:
 
     async def get_user_accessible_nodes(self, user_id: int) -> list[RemnaWaveAccessibleNode]:
         """Получает список доступных нод для пользователя"""
-        panel_user_id = coerce_panel_user_id(user_id)
+        try:
+            panel_user_id = coerce_panel_user_id(user_id)
+        except RemnaWaveInvalidUserIdError:
+            return []
         try:
             response = await self._make_request('GET', f'/api/users/{panel_user_id}/accessible-nodes')
             nodes_data = response.get('response', {}).get('activeNodes', [])
@@ -958,7 +985,7 @@ class RemnaWaveAPI:
                 )
             return result
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return []
             raise
 
