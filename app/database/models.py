@@ -2128,16 +2128,25 @@ class User(Base):
 
         Use user.subscriptions directly for multi-tariff support.
         """
-        if not self.subscriptions:
+        try:
+            from sqlalchemy import inspect
+            ins = inspect(self)
+            if ins is not None and (ins.detached or ins.expired or 'subscriptions' in ins.unloaded):
+                return None
+            subs = self.subscriptions
+        except Exception:
+            return None
+
+        if not subs:
             return None
         # Prefer active/trial subscription
-        for sub in self.subscriptions:
+        for sub in subs:
             if sub.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value):
                 return sub
         # Fallback to most recent real subscription (already ordered by created_at desc).
         # Неоплаченные черновики триала пропускаем — иначе меню покажет незавершённую
         # покупку триала как существующую подписку.
-        for sub in self.subscriptions:
+        for sub in subs:
             if not sub.is_pending_trial:
                 return sub
         return None
@@ -2153,7 +2162,15 @@ class User(Base):
         """
         if self.has_had_paid_subscription:
             return True
-        return any(not sub.is_pending_trial for sub in (self.subscriptions or []))
+        try:
+            from sqlalchemy import inspect
+            ins = inspect(self)
+            if ins is not None and (ins.detached or ins.expired or 'subscriptions' in ins.unloaded):
+                return False
+            subs = self.subscriptions or []
+        except Exception:
+            return False
+        return any(not sub.is_pending_trial for sub in subs)
 
     transactions = relationship('Transaction', back_populates='user')
     referral_earnings = relationship('ReferralEarning', foreign_keys='ReferralEarning.user_id', back_populates='user')

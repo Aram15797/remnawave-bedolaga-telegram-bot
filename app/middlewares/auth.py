@@ -221,7 +221,20 @@ class AuthMiddleware(BaseMiddleware):
                             username=db_user.username,
                             telegram_id=db_user.telegram_id,
                         )
-                        for sub in getattr(db_user, 'subscriptions', None) or []:
+                        from sqlalchemy import inspect
+
+                        db_user_ins = inspect(db_user)
+                        if (
+                            db_user_ins is not None
+                            and not db_user_ins.detached
+                            and not db_user_ins.expired
+                            and 'subscriptions' not in db_user_ins.unloaded
+                        ):
+                            subs = db_user.subscriptions or []
+                        else:
+                            subs = []
+
+                        for sub in subs:
                             if sub.remnawave_id and sub.remnawave_id != db_user.remnawave_id:
                                 asyncio.create_task(
                                     _refresh_remnawave_description(
