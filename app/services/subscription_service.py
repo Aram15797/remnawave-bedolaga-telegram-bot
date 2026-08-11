@@ -6,6 +6,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -291,11 +292,33 @@ class SubscriptionService:
                         subscription_id=subscription.id,
                         remnawave_id=updated_user.id,
                     )
-                # Legacy field — keep in sync for single-mode backward compat
+                # Legacy field — keep in sync for single-mode backward compat.
+                # ix_users_remnawave_id — строгий UNIQUE: конфликт при race condition
+                # между параллельными запросами нельзя устранить SELECT-ом (TOCTOU).
+                # Поэтому сначала пробуем commit с присвоением, а при IntegrityError
+                # снимаем поле и повторяем commit только с подписочными данными.
                 if not settings.is_multi_tariff_enabled():
-                    user.remnawave_id = updated_user.id
+                    if user.remnawave_id != updated_user.id:
+                        user.remnawave_id = updated_user.id
 
-                await db.commit()
+                try:
+                    await db.commit()
+                except IntegrityError as ie:
+                    await db.rollback()
+                    # Проверяем, что это именно конфликт по remnawave_id у users
+                    if 'ix_users_remnawave_id' in str(ie) or 'users_remnawave_id' in str(ie):
+                        logger.warning(
+                            '⚠️ race: remnawave_id уже занят другим пользователем — '
+                            'сохраняем подписку без записи users.remnawave_id',
+                            remnawave_id=updated_user.id,
+                        )
+                        # Убираем значение, которое нарушает unique constraint
+                        user.remnawave_id = None
+                        # Сбрасываем pending изменения user и перезаписываем только подписочные поля
+                        db.expunge(user)
+                        await db.commit()
+                    else:
+                        raise
 
                 logger.info('✅ Создан/обновлен RemnaWave пользователь для подписки', subscription_id=subscription.id)
                 logger.info('🔗 Ссылка на подписку', subscription_url=updated_user.subscription_url)

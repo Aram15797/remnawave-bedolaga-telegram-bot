@@ -1530,6 +1530,12 @@ async def activate_trial(
 
     logger.info('Trial subscription activated for user', user_id=user.id)
 
+    # Pre-extract primitives: after create_remnawave_user raises, the SQLAlchemy
+    # session may be poisoned (IntegrityError → rollback) and any ORM attribute
+    # access (user.id, subscription.id) triggers MissingGreenlet.
+    _retry_user_id = user.id
+    _retry_subscription_id = subscription.id
+
     # Create RemnaWave user
     subscription_service = SubscriptionService()
     panel_user = None
@@ -1552,14 +1558,14 @@ async def activate_trial(
         from app.services.remnawave_retry_queue import remnawave_retry_queue
 
         remnawave_retry_queue.enqueue(
-            subscription_id=subscription.id,
-            user_id=user.id,
+            subscription_id=_retry_subscription_id,
+            user_id=_retry_user_id,
             action='create',
         )
         logger.warning(
             'Trial RemnaWave user not provisioned, enqueued for retry',
-            user_id=user.id,
-            subscription_id=subscription.id,
+            user_id=_retry_user_id,
+            subscription_id=_retry_subscription_id,
         )
 
     # Send admin notification about trial activation
