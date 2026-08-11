@@ -35,13 +35,16 @@ async def _handle_wheel_spin_payment(
     )
     from app.services.wheel_service import wheel_service
 
+    user_id = user.id
+    telegram_id = getattr(user, 'telegram_id', None)
+
     try:
         # Идемпотентность: Telegram доставляет successful_payment «как минимум один раз».
         # Если спин по этому charge_id уже есть — платёж уже обработан, второй приз не выдаём.
         if charge_id and await get_wheel_spin_by_charge_id(db, charge_id):
             logger.info(
                 '🎰 Stars wheel spin already processed (idempotent skip)',
-                user_id=user.id,
+                user_id=user_id,
                 charge_id=charge_id,
             )
             return True
@@ -60,13 +63,13 @@ async def _handle_wheel_spin_payment(
         if settings.is_multi_tariff_enabled():
             from app.database.crud.subscription import get_active_subscriptions_by_user_id
 
-            active_subs = await get_active_subscriptions_by_user_id(db, user.id)
+            active_subs = await get_active_subscriptions_by_user_id(db, user_id)
             # Wheel eligibility: any active non-daily subscription qualifies
             non_daily = [s for s in active_subs if not getattr(s, 'is_daily_tariff', False)]
             eligible = non_daily or active_subs
             subscription = max(eligible, key=lambda s: s.days_left) if eligible else None
         else:
-            subscription = await get_subscription_by_user_id(db, user.id)
+            subscription = await get_subscription_by_user_id(db, user_id)
         if not subscription or not subscription.is_active:
             # Конвертируем Stars в баланс как компенсацию
             rubles_fallback = TelegramStarsService.calculate_rubles_from_stars(stars_amount)
@@ -88,7 +91,7 @@ async def _handle_wheel_spin_payment(
             )
             logger.warning(
                 'Wheel spin without subscription, refunded to balance',
-                user_id=user.id,
+                user_id=user_id,
                 stars_amount=stars_amount,
                 refund_kopeks=kopeks_fallback,
             )
@@ -107,7 +110,7 @@ async def _handle_wheel_spin_payment(
         # создания инвойса в кабинете совещательная и гоночная. Stars уже оплачены —
         # при достигнутом лимите возвращаем их на баланс, а не глотаем.
         if config.daily_spin_limit > 0:
-            spins_today = await get_user_spins_today(db, user.id)
+            spins_today = await get_user_spins_today(db, user_id)
             if spins_today >= config.daily_spin_limit:
                 rubles_fallback = TelegramStarsService.calculate_rubles_from_stars(stars_amount)
                 kopeks_fallback = int((rubles_fallback * Decimal(100)).to_integral_value(rounding=ROUND_HALF_UP))
@@ -128,7 +131,7 @@ async def _handle_wheel_spin_payment(
                 )
                 logger.warning(
                     'Wheel spin over daily limit, refunded to balance',
-                    user_id=user.id,
+                    user_id=user_id,
                     stars_amount=stars_amount,
                 )
                 return False
@@ -163,15 +166,15 @@ async def _handle_wheel_spin_payment(
 
         logger.info(
             '🎰 Creating wheel spin',
-            user_id=user.id,
-            telegram_id=user.telegram_id,
+            user_id=user_id,
+            telegram_id=telegram_id,
             display_name=selected_prize.display_name,
         )
 
         try:
             spin = await create_wheel_spin(
                 db=db,
-                user_id=user.id,
+                user_id=user_id,
                 prize_id=selected_prize.id,
                 payment_type=WheelSpinPaymentType.TELEGRAM_STARS.value,
                 payment_amount=stars_amount,
@@ -191,7 +194,7 @@ async def _handle_wheel_spin_payment(
             await db.rollback()
             logger.info(
                 '🎰 Stars wheel spin duplicate charge id (idempotent skip)',
-                user_id=user.id,
+                user_id=user_id,
                 charge_id=charge_id,
             )
             return True
@@ -215,7 +218,7 @@ async def _handle_wheel_spin_payment(
 
         logger.info(
             '🎰 Wheel spin via Stars',
-            user_id=user.id,
+            user_id=user_id,
             display_name=selected_prize.display_name,
             stars_amount=stars_amount,
         )

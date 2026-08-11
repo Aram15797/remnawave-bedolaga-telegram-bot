@@ -1614,7 +1614,7 @@ class RemnaWaveAPI:
             response = await self._make_request('GET', f'/api/hwid/devices/{panel_user_id}')
             return response['response']
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return {'total': 0, 'devices': []}
             raise
 
@@ -1642,7 +1642,7 @@ class RemnaWaveAPI:
                     break
                 start += len(devices)
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return {'total': 0, 'devices': []}
             raise
 
@@ -1664,7 +1664,7 @@ class RemnaWaveAPI:
         try:
             result = await self._make_request('POST', '/api/hwid/devices/delete-all', data={'userId': panel_user_id})
         except RemnaWaveAPIError as e:
-            if e.status_code == 404:
+            if is_user_not_found_error(e):
                 return True  # пользователя/устройств уже нет — цель достигнута
             logger.error(
                 'Ошибка при сбросе устройств',
