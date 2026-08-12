@@ -1312,8 +1312,8 @@ class SubscriptionService:
             logger.info(
                 'Синхронизация подписки с RemnaWave',
                 subscription_id=sub_id,
-                subscription_url=bool(subscription.subscription_url),
-                remnawave_id=bool(panel_user_id),
+                subscription_url=subscription.subscription_url,
+                remnawave_id=panel_user_id,
             )
 
             # Пытаемся синхронизировать

@@ -920,8 +920,31 @@ class RemnaWaveAPI:
         return await self.enrich_user_with_happ_link(user)
 
     async def reset_user_traffic(self, user_id: int) -> RemnaWaveUser:
+        # RemnaWave 3.0.0: POST /api/users/{id}/actions/reset-traffic requires a body
+        # {"uuid": "<vless_uuid>"} as confirmation. Fetch the user first to get vless_uuid.
         panel_user_id = coerce_panel_user_id(user_id)
-        response = await self._make_request('POST', f'/api/users/{panel_user_id}/actions/reset-traffic')
+        panel_user = await self.get_user_by_id(panel_user_id)
+        data: dict = {}
+        if panel_user and panel_user.vless_uuid:
+            data['uuid'] = panel_user.vless_uuid
+        try:
+            response = await self._make_request('POST', f'/api/users/{panel_user_id}/actions/reset-traffic', data or None)
+        except RemnaWaveAPIError as e:
+            # Fallback: older panel versions (pre-3.0.0) don't require the uuid body.
+            # If we get a uuid validation error, retry without body.
+            error_code = (e.response_data or {}).get('errors') or []
+            is_uuid_validation = any(
+                isinstance(err, dict) and err.get('validation') == 'uuid'
+                for err in error_code
+            )
+            if is_uuid_validation and data:
+                logger.warning(
+                    'reset_user_traffic: uuid body rejected, retrying without body',
+                    panel_user_id=panel_user_id,
+                )
+                response = await self._make_request('POST', f'/api/users/{panel_user_id}/actions/reset-traffic')
+            else:
+                raise
         user = self._parse_user(response['response'])
         return await self.enrich_user_with_happ_link(user)
 
