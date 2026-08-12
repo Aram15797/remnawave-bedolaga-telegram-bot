@@ -25,7 +25,7 @@ async def test_spin_rechecks_daily_limit_under_lock() -> None:
     bail when the limit is now reached — without charging the user."""
     svc = FortuneWheelService()
     user = SimpleNamespace(id=1, balance_kopeks=10_000_000)
-    config = SimpleNamespace(id=1, daily_spin_limit=5, spin_cost_stars=10, spin_cost_stars_enabled=True)
+    config = SimpleNamespace(id=1, daily_spin_limit=5, spin_cost_stars=10, spin_cost_stars_enabled=True, rtp_percent=80.0)
     process_stars = AsyncMock()
     process_days = AsyncMock()
 
@@ -60,7 +60,7 @@ async def test_spin_under_limit_proceeds_to_payment() -> None:
     """Sanity: when the re-check is below the limit, spin() proceeds to payment."""
     svc = FortuneWheelService()
     user = SimpleNamespace(id=1, balance_kopeks=10_000_000)
-    config = SimpleNamespace(id=1, daily_spin_limit=5, spin_cost_stars=10, spin_cost_stars_enabled=True)
+    config = SimpleNamespace(id=1, daily_spin_limit=5, spin_cost_stars=10, spin_cost_stars_enabled=True, rtp_percent=80.0)
     # Make payment raise a clean ValueError so we stop right after the limit gate
     # without having to mock the entire prize pipeline — proves the gate was passed.
     process_stars = AsyncMock(side_effect=ValueError('stop-after-gate'))
@@ -126,3 +126,17 @@ async def test_stars_wheel_spin_idempotent_on_redelivery() -> None:
     assert result is True  # treated as already-processed
     create_spin.assert_not_awaited()  # no second prize
     config_loader.assert_not_awaited()  # short-circuited before any work
+
+
+def test_calculate_prize_probabilities_handles_float_and_config_object() -> None:
+    """calculate_prize_probabilities should accept both float and WheelConfig object."""
+    svc = FortuneWheelService()
+    prize = SimpleNamespace(id=1, manual_probability=None, prize_value_kopeks=1000)
+    config = SimpleNamespace(rtp_percent=80.0)
+
+    probs_float = svc.calculate_prize_probabilities(80.0, [prize], 10000)
+    probs_config = svc.calculate_prize_probabilities(config, [prize], 10000)
+
+    assert len(probs_float) == 1
+    assert probs_float == probs_config
+

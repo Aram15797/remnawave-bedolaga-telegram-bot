@@ -192,7 +192,7 @@ class FortuneWheelService:
         )
 
     def calculate_prize_probabilities(
-        self, rtp_percent: float, prizes: list[WheelPrize], spin_cost_kopeks: int
+        self, rtp_percent: float | Any, prizes: list[WheelPrize], spin_cost_kopeks: int
     ) -> list[tuple[WheelPrize, float]]:
         """
         Рассчитать вероятности выпадения призов на основе RTP.
@@ -206,7 +206,10 @@ class FortuneWheelService:
         if not prizes:
             return []
 
-        target_payout = spin_cost_kopeks * (rtp_percent / 100)
+        if hasattr(rtp_percent, 'rtp_percent'):
+            rtp_percent = getattr(rtp_percent, 'rtp_percent', 80.0)
+
+        target_payout = spin_cost_kopeks * (float(rtp_percent) / 100)
 
         # Разделяем призы с ручной вероятностью и автоматической
         manual_prizes = []
@@ -621,7 +624,7 @@ class FortuneWheelService:
             # synchronous lazy-load outside a greenlet → MissingGreenlet.
             # Plain ints/floats are never affected by session state.
             config_id = config.id
-            config_rtp_percent: float = config.rtp_percent
+            config_rtp_percent: float = getattr(config, 'rtp_percent', 80.0)
             config_daily_spin_limit: int = config.daily_spin_limit
             config_spin_cost_days: int = config.spin_cost_days
             config_spin_cost_stars: int = config.spin_cost_stars

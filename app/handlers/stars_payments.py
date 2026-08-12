@@ -141,7 +141,7 @@ async def _handle_wheel_spin_payment(
         payment_value_kopeks = int((rubles_amount * Decimal(100)).to_integral_value(rounding=ROUND_HALF_UP))
 
         # Рассчитываем вероятности и выбираем приз
-        prizes_with_probs = wheel_service.calculate_prize_probabilities(config, prizes, payment_value_kopeks)
+        prizes_with_probs = wheel_service.calculate_prize_probabilities(config.rtp_percent, prizes, payment_value_kopeks)
         selected_prize = wheel_service._select_prize(prizes_with_probs)
 
         # Применяем приз
