@@ -74,6 +74,7 @@ async def get_wheel_config(
             emoji=p.emoji,
             color=p.color,
             prize_type=p.prize_type,
+            manual_probability=p.manual_probability,
         )
         for p in prizes
     ]

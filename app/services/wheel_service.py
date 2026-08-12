@@ -199,9 +199,10 @@ class FortuneWheelService:
 
         Алгоритм:
         1. Целевая средняя выплата = spin_cost * (RTP / 100)
-        2. Для призов с manual_probability - используем его напрямую
-        3. Для остальных - рассчитываем веса обратно пропорционально стоимости приза
-        4. "Nothing" сектор балансирует систему
+        2. Для призов с manual_probability - используем его напрямую (если > 0)
+        3. Призы с manual_probability == 0 СТРОГО исключаются из выпадения
+        4. Для остальных - рассчитываем веса обратно пропорционально стоимости приза
+        5. "Nothing" сектор балансирует систему
         """
         if not prizes:
             return []
@@ -209,57 +210,70 @@ class FortuneWheelService:
         if hasattr(rtp_percent, 'rtp_percent'):
             rtp_percent = getattr(rtp_percent, 'rtp_percent', 80.0)
 
-        target_payout = spin_cost_kopeks * (float(rtp_percent) / 100)
+        spin_cost = max(spin_cost_kopeks, 100)
+        target_payout = spin_cost * (float(rtp_percent) / 100.0)
 
         # Разделяем призы с ручной вероятностью и автоматической
-        manual_prizes = []
-        auto_prizes = []
+        manual_prizes: list[tuple[WheelPrize, float]] = []
+        auto_prizes: list[WheelPrize] = []
         manual_prob_sum = 0.0
 
         for prize in prizes:
             if prize.manual_probability is not None:
-                prob = max(0.0, prize.manual_probability)
-                manual_prizes.append((prize, prob))
-                manual_prob_sum += prob
+                prob = max(0.0, float(prize.manual_probability))
+                if prob > 0.0:
+                    manual_prizes.append((prize, prob))
+                    manual_prob_sum += prob
+                # prob == 0.0 strictly excluded
             else:
                 auto_prizes.append(prize)
 
         # Оставшаяся вероятность для авто-призов
-        remaining_prob = max(0, 1.0 - manual_prob_sum)
+        remaining_prob = max(0.0, 1.0 - manual_prob_sum)
 
-        if not auto_prizes or remaining_prob <= 0:
-            # Только ручные призы, нормализуем их
-            if manual_prizes:
-                total = sum(p[1] for p in manual_prizes)
-                return [(p[0], p[1] / total) for p in manual_prizes]
-            return []
+        result: list[tuple[WheelPrize, float]] = []
 
-        # Рассчитываем веса для авто-призов
-        # Вес обратно пропорционален стоимости приза (более дорогие выпадают реже)
-        weights = []
-        for prize in auto_prizes:
-            if prize.prize_value_kopeks > 0:
-                # Чем дороже приз, тем меньше вес
-                weight = target_payout / prize.prize_value_kopeks
+        if auto_prizes and remaining_prob > 0.0:
+            weights = []
+            for prize in auto_prizes:
+                if prize.prize_value_kopeks > 0:
+                    weight = target_payout / prize.prize_value_kopeks
+                else:
+                    weight = 1.0
+                weights.append((prize, max(weight, 0.01)))
+
+            total_weight = sum(w[1] for w in weights)
+            if total_weight > 0:
+                auto_probabilities = [(prize, (weight / total_weight) * remaining_prob) for prize, weight in weights]
+                result = manual_prizes + auto_probabilities
             else:
-                # "Nothing" или нулевой приз - даем базовый вес
-                weight = 1.0
-            weights.append((prize, max(weight, 0.01)))  # Минимальный вес 1%
+                result = manual_prizes
+        else:
+            result = manual_prizes
 
-        # Нормализуем веса авто-призов до remaining_prob
-        total_weight = sum(w[1] for w in weights)
-        auto_probabilities = [(prize, (weight / total_weight) * remaining_prob) for prize, weight in weights]
-
-        # Объединяем
-        result = manual_prizes + auto_probabilities
-
-        # Финальная нормализация (на случай погрешностей)
+        # Финальная нормализация и исключение призов с вероятностью 0
         total = sum(p[1] for p in result)
         if total > 0:
-            result = [(p[0], p[1] / total) for p in result]
+            normalized = [(prize, prob / total) for prize, prob in result if prob > 0.0]
+            if normalized:
+                return normalized
 
-        # Исключаем все призы с нулевой/отрицательной вероятностью (например, manual_probability=0)
-        return [(prize, prob) for prize, prob in result if prob > 0.0]
+        # Fallback: если все имеющиеся призы имеют probability = 0 (например, админ установил manual_probability=0 для ВСЕХ призов)
+        fallback_prizes = [p for p in prizes if p.manual_probability is None or p.manual_probability > 0]
+        if not fallback_prizes:
+            fallback_prizes = [p for p in prizes if getattr(p, 'prize_type', None) == WheelPrizeType.NOTHING.value]
+        if not fallback_prizes:
+            fallback_prizes = prizes
+
+        if fallback_prizes:
+            winnable_fallback = [p for p in fallback_prizes if p.manual_probability != 0.0]
+            if not winnable_fallback:
+                # В самом крайнем случае, если ВСЕ призы в базе имеют manual_probability=0, выбираем первый без исключения
+                winnable_fallback = [fallback_prizes[0]]
+            eq_prob = 1.0 / len(winnable_fallback)
+            return [(p, eq_prob) for p in winnable_fallback]
+
+        return []
 
     def _select_prize(self, prizes_with_probabilities: list[tuple[WheelPrize, float]]) -> WheelPrize:
         """Выбрать приз на основе вероятностей."""

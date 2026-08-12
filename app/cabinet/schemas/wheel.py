@@ -37,6 +37,7 @@ class WheelPrizeDisplay(BaseModel):
     emoji: str
     color: str
     prize_type: str
+    manual_probability: float | None = None
 
     class Config:
         from_attributes = True

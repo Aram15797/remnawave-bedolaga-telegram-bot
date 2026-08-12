@@ -158,3 +158,19 @@ def test_zero_manual_probability_prize_is_never_selected() -> None:
         assert selected.id != zero_prize.id
 
 
+def test_zero_manual_probability_when_all_prizes_have_manual_probability() -> None:
+    """Zero manual probability prize must be excluded even when all prizes are manual."""
+    svc = FortuneWheelService()
+    zero_prize = SimpleNamespace(id=1, display_name='iPhone', manual_probability=0.0, prize_value_kopeks=0)
+    p1 = SimpleNamespace(id=2, display_name='1 Day', manual_probability=0.5, prize_value_kopeks=100)
+    p2 = SimpleNamespace(id=3, display_name='3 Days', manual_probability=0.5, prize_value_kopeks=300)
+
+    prizes_with_probs = svc.calculate_prize_probabilities(80.0, [zero_prize, p1, p2], 10000)
+
+    assert all(p[0].id != zero_prize.id for p in prizes_with_probs)
+    for _ in range(200):
+        selected = svc._select_prize(prizes_with_probs)
+        assert selected.id != zero_prize.id
+
+
+
