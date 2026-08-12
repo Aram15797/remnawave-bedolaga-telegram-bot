@@ -450,6 +450,28 @@ class SubscriptionService:
             # указывают на ОДИН панельный аккаунт, а `uq_subscriptions_remnawave_id`
             # частично-уникален — записав id второй строке, мы бы словили
             # IntegrityError и откатили вместе с ним уже применённое пополнение.
+            #
+            # ix_users_remnawave_id — строгий UNIQUE на другой таблице: TOCTOU
+            # всё равно возможен при гонке, но проверка снижает число конфликтов.
+            user_id_val = safe_get_attr(user, 'id', None)
+            other_user_q = (
+                select(User.id)
+                .where(User.remnawave_id == adopted.id)
+                .where(User.id != user_id_val)
+                .limit(1)
+            )
+            existing_owner = (await db.execute(other_user_q)).scalar_one_or_none()
+            if existing_owner is not None:
+                logger.warning(
+                    '⚠️ users.remnawave_id уже занят другим пользователем — '
+                    'пропускаем запись, обновление пойдёт без сохранения panel id на User',
+                    adopted_remnawave_id=adopted.id,
+                    owner_user_id=existing_owner,
+                    this_user_id=user_id_val,
+                )
+                # Return the id anyway so the caller can still PATCH the panel user.
+                # The commit guard in update_remnawave_user will handle any residual race.
+                return adopted.id
             user.remnawave_id = adopted.id
         await db.flush((subscription, user))
         return adopted.id
@@ -938,7 +960,37 @@ class SubscriptionService:
 
                 subscription.subscription_url = updated_user.subscription_url
                 subscription.subscription_crypto_link = updated_user.happ_crypto_link
-                await db.commit()
+
+                # ix_users_remnawave_id — строгий UNIQUE: конфликт при race condition
+                # (_adopt_panel_id_for_update мог записать user.remnawave_id во flush).
+                # Стратегия: пробуем commit как есть; при IntegrityError откатываемся,
+                # восстанавливаем только подписочные поля и коммитим без user-поля.
+                try:
+                    await db.commit()
+                except IntegrityError as ie:
+                    await db.rollback()
+                    if 'ix_users_remnawave_id' in str(ie) or 'users_remnawave_id' in str(ie):
+                        logger.warning(
+                            '⚠️ race в update_remnawave_user: remnawave_id уже занят — '
+                            'сохраняем ссылки подписки без записи users.remnawave_id',
+                            remnawave_id=remnawave_id,
+                        )
+                        # Restore subscription-level fields wiped by the rollback.
+                        # Do NOT touch user.remnawave_id — another session owns that slot.
+                        subscription.subscription_url = updated_user.subscription_url
+                        subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                        try:
+                            await db.commit()
+                        except IntegrityError as ie2:
+                            await db.rollback()
+                            logger.warning(
+                                '⚠️ race (2nd hit) в update_remnawave_user: пропускаем commit',
+                                remnawave_id=remnawave_id,
+                                error=str(ie2),
+                            )
+                    else:
+                        raise
+
 
                 status_text = 'активным' if is_actually_active else 'истёкшим'
                 logger.info(
