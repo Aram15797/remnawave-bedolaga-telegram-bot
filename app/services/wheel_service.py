@@ -587,6 +587,11 @@ class FortuneWheelService:
         5. Создать запись WheelSpin
         6. Вернуть результат
         """
+        # Snapshot user.id NOW — before any try/except. After db.rollback() SQLAlchemy
+        # marks every ORM attribute as expired, so accessing user.id inside the except
+        # block would trigger a lazy-load that fires await_only() outside a greenlet
+        # and raises MissingGreenlet. A plain int is never affected by session state.
+        user_id: int = user.id
         try:
             # 1. Проверяем доступность
             availability = await self.check_availability(db, user)
@@ -746,7 +751,11 @@ class FortuneWheelService:
             )
         except Exception as e:
             await db.rollback()
-            logger.exception('Ошибка спина колеса для user_id', user_id=user.id, error=e)
+            # Use the pre-snapshotted user_id (plain int) — NOT user.id.
+            # After rollback the ORM object is expired; accessing user.id would call
+            # await_only() outside a greenlet and raise MissingGreenlet on top of the
+            # original exception, masking the real error.
+            logger.exception('Ошибка спина колеса для user_id', user_id=user_id, error=e)
             return SpinResult(
                 success=False,
                 error='internal_error',

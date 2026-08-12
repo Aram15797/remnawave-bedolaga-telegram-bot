@@ -322,8 +322,19 @@ class SubscriptionService:
                         if await self._panel_id_is_free_for(db, subscription, updated_user.id):
                             subscription.remnawave_id = updated_user.id
 
-                        await db.commit()
-                        await db.refresh(subscription)
+                        # Guard against an extremely unlikely second race between the
+                        # _panel_id_is_free_for check above and this commit.
+                        try:
+                            await db.commit()
+                            await db.refresh(subscription)
+                        except IntegrityError as ie2:
+                            await db.rollback()
+                            logger.warning(
+                                '⚠️ race (2nd hit): remnawave_id снова занят — '
+                                'подписочные данные уже применены в панели, пропускаем commit',
+                                remnawave_id=updated_user.id,
+                                error=str(ie2),
+                            )
                     else:
                         raise
 
