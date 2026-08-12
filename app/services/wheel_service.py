@@ -258,23 +258,25 @@ class FortuneWheelService:
         if total > 0:
             result = [(p[0], p[1] / total) for p in result]
 
-        return result
+        # Исключаем все призы с нулевой/отрицательной вероятностью (например, manual_probability=0)
+        return [(prize, prob) for prize, prob in result if prob > 0.0]
 
     def _select_prize(self, prizes_with_probabilities: list[tuple[WheelPrize, float]]) -> WheelPrize:
         """Выбрать приз на основе вероятностей."""
-        if not prizes_with_probabilities:
-            raise ValueError('No prizes to select from')
+        valid_prizes = [(prize, prob) for prize, prob in prizes_with_probabilities if prob > 0.0]
+        if not valid_prizes:
+            raise ValueError('No winnable prizes available (all probabilities are 0)')
 
         rand = random.random()
         cumulative = 0.0
 
-        for prize, probability in prizes_with_probabilities:
+        for prize, probability in valid_prizes:
             cumulative += probability
-            if rand <= cumulative:
+            if rand < cumulative or (rand == 0.0 and cumulative > 0.0):
                 return prize
 
-        # Fallback на последний приз
-        return prizes_with_probabilities[-1][0]
+        # Fallback на последний приз с положительной вероятностью
+        return valid_prizes[-1][0]
 
     def _calculate_rotation(self, prizes: list[WheelPrize], selected_prize: WheelPrize) -> float:
         """

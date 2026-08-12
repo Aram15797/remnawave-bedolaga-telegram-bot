@@ -140,3 +140,21 @@ def test_calculate_prize_probabilities_handles_float_and_config_object() -> None
     assert len(probs_float) == 1
     assert probs_float == probs_config
 
+
+def test_zero_manual_probability_prize_is_never_selected() -> None:
+    """A prize with manual_probability=0 must be completely excluded from selection."""
+    svc = FortuneWheelService()
+    zero_prize = SimpleNamespace(id=1, display_name='iPhone', manual_probability=0.0, prize_value_kopeks=0)
+    valid_prize = SimpleNamespace(id=2, display_name='3 Days', manual_probability=None, prize_value_kopeks=1000)
+
+    prizes_with_probs = svc.calculate_prize_probabilities(80.0, [zero_prize, valid_prize], 10000)
+
+    # Zero probability prize must not be in the calculated probabilities
+    assert all(p[0].id != zero_prize.id for p in prizes_with_probs)
+
+    # Even if thousands of spins are made, zero_prize must never be selected
+    for _ in range(500):
+        selected = svc._select_prize(prizes_with_probs)
+        assert selected.id != zero_prize.id
+
+
