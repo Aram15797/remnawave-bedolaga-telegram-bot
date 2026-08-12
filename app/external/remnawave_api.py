@@ -840,7 +840,13 @@ class RemnaWaveAPI:
         # uuid удалён из схемы в 3.0.0, поэтому передаём username.
         panel_user_id = coerce_panel_user_id(user_id)
         data: dict = {'id': panel_user_id}
-        if username:
+        # RemnaWave 3.0.0 UpdateUserCommand.refine requires uuid OR username.
+        # uuid was removed from the schema, so we must always send username.
+        # Use `is not None` — NOT truthiness — because an empty-string username
+        # is still a valid identifier the panel knows, and `if username:` would
+        # silently drop it, producing a payload the API rejects with
+        # "Either uuid or username must be provided".
+        if username is not None:
             data['username'] = username
 
         if status:

@@ -192,7 +192,7 @@ class FortuneWheelService:
         )
 
     def calculate_prize_probabilities(
-        self, config: WheelConfig, prizes: list[WheelPrize], spin_cost_kopeks: int
+        self, rtp_percent: float, prizes: list[WheelPrize], spin_cost_kopeks: int
     ) -> list[tuple[WheelPrize, float]]:
         """
         Рассчитать вероятности выпадения призов на основе RTP.
@@ -206,7 +206,7 @@ class FortuneWheelService:
         if not prizes:
             return []
 
-        target_payout = spin_cost_kopeks * (config.rtp_percent / 100)
+        target_payout = spin_cost_kopeks * (rtp_percent / 100)
 
         # Разделяем призы с ручной вероятностью и автоматической
         manual_prizes = []
@@ -614,6 +614,20 @@ class FortuneWheelService:
             config = await get_or_create_wheel_config(db)
             prizes = await get_wheel_prizes(db, config.id, active_only=True)
 
+            # Snapshot all scalar config values NOW into plain Python variables.
+            # _process_days_payment calls update_remnawave_user which does db.commit()
+            # internally. After that commit SQLAlchemy expires all ORM objects (including
+            # config). Any subsequent access to config.rtp_percent etc. would trigger a
+            # synchronous lazy-load outside a greenlet → MissingGreenlet.
+            # Plain ints/floats are never affected by session state.
+            config_id = config.id
+            config_rtp_percent: float = config.rtp_percent
+            config_daily_spin_limit: int = config.daily_spin_limit
+            config_spin_cost_days: int = config.spin_cost_days
+            config_spin_cost_stars: int = config.spin_cost_stars
+            config_min_subscription_days: int = config.min_subscription_days_for_day_payment
+            config_promo_prefix: str = config.promo_prefix
+
             if not prizes:
                 return SpinResult(
                     success=False,
@@ -633,9 +647,9 @@ class FortuneWheelService:
             from app.database.crud.user import lock_user_for_update
 
             user = await lock_user_for_update(db, user)
-            if config.daily_spin_limit > 0:
+            if config_daily_spin_limit > 0:
                 spins_today = await get_user_spins_today(db, user.id)
-                if spins_today >= config.daily_spin_limit:
+                if spins_today >= config_daily_spin_limit:
                     return SpinResult(
                         success=False,
                         error='daily_limit_reached',
@@ -678,7 +692,7 @@ class FortuneWheelService:
                         error='cannot_pay_stars',
                         message='Оплата Stars недоступна',
                     )
-                payment_amount = config.spin_cost_stars
+                payment_amount = config_spin_cost_stars
                 payment_value_kopeks = await self._process_stars_payment(db, user, config)
             elif payment_type == WheelSpinPaymentType.SUBSCRIPTION_DAYS.value:
                 if not availability.can_pay_days:
@@ -687,7 +701,7 @@ class FortuneWheelService:
                         error='cannot_pay_days',
                         message='Оплата днями подписки недоступна',
                     )
-                payment_amount = config.spin_cost_days
+                payment_amount = config_spin_cost_days
                 payment_value_kopeks = await self._process_days_payment(db, user, config, target_subscription)
             else:
                 return SpinResult(
@@ -697,7 +711,7 @@ class FortuneWheelService:
                 )
 
             # 3. Рассчитываем вероятности и выбираем приз
-            prizes_with_probs = self.calculate_prize_probabilities(config, prizes, payment_value_kopeks)
+            prizes_with_probs = self.calculate_prize_probabilities(config_rtp_percent, prizes, payment_value_kopeks)
             selected_prize = self._select_prize(prizes_with_probs)
 
             # 4. Рассчитываем угол для анимации
