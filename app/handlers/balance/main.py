@@ -370,7 +370,12 @@ async def show_payment_methods(callback: types.CallbackQuery, db_user: User, db:
 
     full_text = payment_text
 
-    keyboard = get_payment_methods_keyboard(amount_kopeks, db_user.language)
+    if amount_kopeks > 0:
+        from app.keyboards.inline import get_payment_methods_keyboard_with_cart
+
+        keyboard = get_payment_methods_keyboard_with_cart(db_user.language, amount_kopeks=amount_kopeks)
+    else:
+        keyboard = get_payment_methods_keyboard(amount_kopeks, db_user.language)
 
     # Если сообщение недоступно, отправляем новое
     if isinstance(callback.message, InaccessibleMessage):
