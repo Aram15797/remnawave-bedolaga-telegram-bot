@@ -116,6 +116,12 @@ async def process_stars_payment_amount(message: types.Message, db_user: User, am
             prices=[types.LabeledPrice(label='Пополнение баланса', amount=stars_amount)],
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('PAY_STARS_BUTTON', 'Оплатить {stars} ⭐').format(stars=stars_amount),
+                            pay=True,
+                        )
+                    ],
                     [types.InlineKeyboardButton(text=texts.BACK, callback_data='balance_topup')],
                 ]
             ),
