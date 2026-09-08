@@ -328,6 +328,9 @@ class SubscriptionService:
                 if not settings.is_multi_tariff_enabled():
                     user.remnawave_id = updated_user.id
 
+                # Flush dirty fields to the DB session so they are not wiped by any subsequent db.refresh()
+                await db.flush((subscription, user))
+
             logger.info('✅ Создан/обновлен RemnaWave пользователь для подписки', subscription_id=subscription.id)
             logger.info('🔗 Ссылка на подписку', subscription_url=updated_user.subscription_url)
             strategy_name = settings.DEFAULT_TRAFFIC_RESET_STRATEGY
@@ -572,7 +575,22 @@ class SubscriptionService:
             suffix=f'_{short_suffix}',
         )
 
-        updated_user = await api.create_user(username=username, **common_kwargs)
+        try:
+            updated_user = await api.create_user(username=username, **common_kwargs)
+        except RemnaWaveAPIError as create_err:
+            status_code = getattr(create_err, 'status_code', None)
+            if status_code == 409 or 'already exists' in str(create_err).lower():
+                existing = await api.get_user_by_username(username)
+                if existing:
+                    if db is None or await self._panel_id_is_free_for(db, subscription, existing.id):
+                        subscription.remnawave_id = existing.id
+                    if settings.RESET_DEVICES_ON_RENEWAL:
+                        await api.reset_user_devices(existing.id)
+                    updated_user = await api.update_user(user_id=existing.id, **common_kwargs)
+                else:
+                    raise
+            else:
+                raise
         if reset_traffic:
             await self._reset_user_traffic(api, updated_user.id, user, reset_reason)
         return updated_user

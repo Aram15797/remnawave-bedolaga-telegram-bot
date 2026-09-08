@@ -569,7 +569,6 @@ async def fulfill_purchase(
 
         subscription_service = SubscriptionService()
         await subscription_service.create_remnawave_user(db, subscription)
-        await db.refresh(subscription)
 
         purchase.subscription_url = subscription.subscription_url
         purchase.subscription_crypto_link = subscription.subscription_crypto_link
@@ -1596,7 +1595,6 @@ async def activate_purchase(db: AsyncSession, purchase_token: str, *, skip_notif
                 )
 
         await subscription_service.create_remnawave_user(db, subscription)
-        await db.refresh(subscription)
 
         purchase.subscription_url = subscription.subscription_url
         purchase.subscription_crypto_link = subscription.subscription_crypto_link
