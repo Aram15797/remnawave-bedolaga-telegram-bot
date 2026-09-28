@@ -24,6 +24,17 @@ from app.utils.subscription_utils import (
 
 logger = structlog.get_logger(__name__)
 
+_ESIM_BUTTON_URL = 'https://t.me/SligEsimBot?start=t_SLIGVPN'
+_ESIM_EMOJI_ID = '5346179954948208001'
+
+
+def _esim_promo_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text='eSIM (190+ стран)',
+        url=_ESIM_BUTTON_URL,
+        icon_custom_emoji_id=_ESIM_EMOJI_ID,
+    )
+
 
 async def get_main_menu_keyboard_async(
     db: AsyncSession,
@@ -588,6 +599,8 @@ def _build_cabinet_main_menu_keyboard(
     if is_moderator and not is_admin:
         keyboard_rows.append([InlineKeyboardButton(text='🧑‍⚖️ Модерация', callback_data='moderator_panel')])
 
+    keyboard_rows.append([_esim_promo_button()])
+
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
@@ -833,6 +846,8 @@ def get_main_menu_keyboard(
     # Moderator access (limited support panel)
     if (not is_admin) and is_moderator:
         keyboard.append([InlineKeyboardButton(text='🧑‍⚖️ Модерация', callback_data='moderator_panel')])
+
+    keyboard.append([_esim_promo_button()])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

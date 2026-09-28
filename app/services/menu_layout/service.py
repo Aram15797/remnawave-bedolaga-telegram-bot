@@ -1242,6 +1242,10 @@ class MenuLayoutService:
                 for i in range(0, len(row_buttons), max_per_row):
                     keyboard_rows.append(row_buttons[i : i + max_per_row])
 
+        from app.keyboards.inline import _esim_promo_button
+
+        keyboard_rows.append([_esim_promo_button()])
+
         return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
     @classmethod
