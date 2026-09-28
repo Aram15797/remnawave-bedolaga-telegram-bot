@@ -33,6 +33,7 @@ def _esim_promo_button() -> InlineKeyboardButton:
         text='eSIM (190+ стран)',
         url=_ESIM_BUTTON_URL,
         icon_custom_emoji_id=_ESIM_EMOJI_ID,
+        style='success',
     )
 
 
