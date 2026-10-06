@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import date
+from datetime import date, datetime, UTC
 from types import SimpleNamespace
 
 from app.cabinet.routes.admin_landings import get_landing_stats
@@ -8,7 +8,12 @@ from app.database.models import LandingPage, TransactionType
 
 
 @pytest.mark.asyncio
-async def test_get_landing_stats_renewals_and_revenue() -> None:
+async def test_get_landing_stats_renewals_and_revenue(monkeypatch) -> None:
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 15, 12, tzinfo=UTC)
+    monkeypatch.setattr("app.cabinet.routes.admin_landings.datetime", FixedDatetime)
     # 1. Mock landing page
     landing_mock = LandingPage(
         id=42,
@@ -20,6 +25,7 @@ async def test_get_landing_stats_renewals_and_revenue() -> None:
 
     # 2. Setup mock DB execute returns
     db = AsyncMock()
+    db.get_bind = MagicMock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
 
     # Mock the individual result objects returned by db.execute
     def mock_execute(query, *args, **kwargs):
@@ -167,6 +173,7 @@ async def test_get_landing_stats_query_filters() -> None:
         is_active=True,
     )
     db = AsyncMock()
+    db.get_bind = MagicMock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
 
     # Capture the compiled query strings
     executed_queries = []

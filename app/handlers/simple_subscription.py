@@ -1,7 +1,6 @@
 """Обработчики для простой покупки подписки."""
 
 import html
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -22,10 +21,12 @@ from app.services.subscription_purchase_service import SubscriptionPurchaseServi
 from app.states import SubscriptionStates
 from app.utils.decorators import error_handler
 from app.utils.pricing_utils import compute_simple_subscription_price
+from app.utils.subscription_time import local_days_until
 from app.utils.subscription_utils import (
     get_display_subscription_link,
     resolve_simple_subscription_device_limit,
 )
+from app.utils.timezone import format_local_datetime
 
 
 logger = structlog.get_logger(__name__)
@@ -144,7 +145,7 @@ async def start_simple_subscription_purchase(
         elif getattr(current_subscription, 'is_trial', False):
             # Это тестовая подписка
             try:
-                days_left = max(0, (current_subscription.end_date - datetime.now(UTC)).days)
+                days_left = local_days_until(current_subscription.end_date)
             except Exception:
                 days_left = 0
             key = (
@@ -1746,7 +1747,7 @@ async def check_simple_pal24_payment_status(
             f'🆔 ID счета: {payment.bill_id}',
             f'💰 Сумма: {settings.format_price(payment.amount_kopeks)}',
             f'📊 Статус: {emoji} {status_text}',
-            f'📅 Создан: {payment.created_at.strftime("%d.%m.%Y %H:%M")}',
+            f'📅 Создан: {format_local_datetime(payment.created_at, "%d.%m.%Y %H:%M")}',
         ]
 
         if payment.is_paid:
@@ -1882,7 +1883,7 @@ async def check_simple_mulenpay_payment_status(
         f'🆔 ID: {payment.mulen_payment_id or payment.id}',
         f'💰 Сумма: {settings.format_price(payment.amount_kopeks)}',
         f'📊 Статус: {emoji} {status_text}',
-        f'📅 Создан: {payment.created_at.strftime("%d.%m.%Y %H:%M") if payment.created_at else "—"}',
+        f'📅 Создан: {format_local_datetime(payment.created_at, "%d.%m.%Y %H:%M") if payment.created_at else "—"}',
     ]
 
     if payment.is_paid:
@@ -1952,7 +1953,7 @@ async def check_simple_cryptobot_payment_status(
         f'🆔 ID: {payment.invoice_id}',
         f'💰 Сумма: {payment.amount} {payment.asset}',
         f'📊 Статус: {emoji} {status_text}',
-        f'📅 Создан: {payment.created_at.strftime("%d.%m.%Y %H:%M") if payment.created_at else "—"}',
+        f'📅 Создан: {format_local_datetime(payment.created_at, "%d.%m.%Y %H:%M") if payment.created_at else "—"}',
     ]
 
     if payment.status == 'paid':
@@ -2029,7 +2030,7 @@ async def check_simple_heleket_payment_status(
         f'🆔 UUID: {payment.uuid[:8]}...',
         f'💰 Сумма: {settings.format_price(payment.amount_kopeks)}',
         f'📊 Статус: {emoji} {status_text}',
-        f'📅 Создан: {payment.created_at.strftime("%d.%m.%Y %H:%M") if payment.created_at else "—"}',
+        f'📅 Создан: {format_local_datetime(payment.created_at, "%d.%m.%Y %H:%M") if payment.created_at else "—"}',
     ]
 
     if payment.payer_amount and payment.payer_currency:
@@ -2101,7 +2102,7 @@ async def check_simple_wata_payment_status(
         f'🆔 ID: {payment.payment_link_id}',
         f'💰 Сумма: {settings.format_price(payment.amount_kopeks)}',
         f'📊 Статус: {emoji} {status_text}',
-        f'📅 Создан: {payment.created_at.strftime("%d.%m.%Y %H:%M") if payment.created_at else "—"}',
+        f'📅 Создан: {format_local_datetime(payment.created_at, "%d.%m.%Y %H:%M") if payment.created_at else "—"}',
     ]
 
     if payment.is_paid:

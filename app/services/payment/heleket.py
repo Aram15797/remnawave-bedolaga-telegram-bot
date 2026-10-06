@@ -6,7 +6,7 @@ import secrets
 import time
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,10 @@ from app.config import settings
 from app.database.models import PaymentMethod, TransactionType
 from app.utils.payment_logger import payment_logger as logger
 from app.utils.user_utils import format_referrer_info
+
+
+if TYPE_CHECKING:
+    from app.database.models import HeleketPayment
 
 
 class HeleketPaymentMixin:
@@ -297,7 +301,7 @@ class HeleketPaymentMixin:
             return updated_payment
 
         if status_normalized not in {'paid', 'paid_over'}:
-            logger.info('Heleket платеж в статусе , зачисление не требуется', uuid=updated_payment.uuid, status=status)
+            logger.info('Heleket платёж в этом статусе зачисления не требует', uuid=updated_payment.uuid, status=status)
             return updated_payment
 
         amount_kopeks = updated_payment.amount_kopeks

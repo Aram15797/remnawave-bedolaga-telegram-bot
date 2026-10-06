@@ -59,6 +59,7 @@ from app.services.trial_activation_service import (
 )
 from app.services.user_cart_service import user_cart_service
 from app.utils.decorators import error_handler
+from app.utils.legacy_subscription import is_legacy_subscription as _legacy_subscription
 
 
 logger = structlog.get_logger(__name__)
@@ -114,6 +115,7 @@ from app.utils.pricing_utils import (
     calculate_months_from_days,
     format_period_description,
 )
+from app.utils.subscription_time import format_expiry_warning, format_time_left
 from app.utils.subscription_utils import (
     get_display_subscription_link,
     resolve_simple_subscription_device_limit,
@@ -122,6 +124,8 @@ from app.utils.timezone import format_local_datetime
 
 from .autopay import (
     handle_autopay_menu,
+    handle_cashera_recurring_cancel,
+    handle_cashera_recurring_enable,
     handle_sbp_recurring_cancel,
     handle_sbp_recurring_enable,
     handle_sbp_recurring_menu,
@@ -264,31 +268,8 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
         status_display = texts.t('SUBSCRIPTION_STATUS_UNKNOWN', 'Неизвестно')
         status_emoji = '❓'
 
-    if subscription.end_date <= current_time:
-        days_left = 0
-        time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_EXPIRED', 'истёк')
-        warning_text = ''
-    else:
-        delta = subscription.end_date - current_time
-        days_left = delta.days
-        hours_left = delta.seconds // 3600
-
-        if days_left > 1:
-            time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_DAYS', '{days} дн.').format(days=days_left)
-            warning_text = ''
-        elif days_left == 1:
-            time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_DAYS', '{days} дн.').format(days=days_left)
-            warning_text = texts.t('SUBSCRIPTION_WARNING_TOMORROW', '\n⚠️ истекает завтра!')
-        elif hours_left > 0:
-            time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_HOURS', '{hours} ч.').format(hours=hours_left)
-            warning_text = texts.t('SUBSCRIPTION_WARNING_TODAY', '\n⚠️ истекает сегодня!')
-        else:
-            minutes_left = (delta.seconds % 3600) // 60
-            time_left_text = texts.t('SUBSCRIPTION_TIME_LEFT_MINUTES', '{minutes} мин.').format(minutes=minutes_left)
-            warning_text = texts.t(
-                'SUBSCRIPTION_WARNING_MINUTES',
-                '\n🔴 истекает через несколько минут!',
-            )
+    time_left_text = format_time_left(texts, subscription.end_date, current_time)
+    warning_text = format_expiry_warning(texts, subscription.end_date, current_time)
 
     subscription_type = (
         texts.t('SUBSCRIPTION_TYPE_TRIAL', 'Триал')
@@ -556,7 +537,7 @@ async def show_subscription_info(callback: types.CallbackQuery, db_user: User, d
                 bar = '▰' * filled + '▱' * (bar_length - filled)
 
                 # Форматируем дату истечения
-                expire_date = purchase.expires_at.strftime('%d.%m.%Y')
+                expire_date = format_local_datetime(purchase.expires_at, '%d.%m.%Y')
 
                 # Формируем текст о времени
                 if days_remaining == 0:
@@ -1641,7 +1622,12 @@ async def handle_extend_subscription(
             '⚠️ Ваша текущая подписка продолжит действовать до окончания срока.',
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [types.InlineKeyboardButton(text='📦 Выбрать тариф', callback_data='tariff_switch')],
+                    [
+                        types.InlineKeyboardButton(
+                            text=texts.t('MOVE_TO_TARIFF_BUTTON', '📦 Перейти на тариф'),
+                            callback_data='tariff_switch',
+                        )
+                    ],
                     [build_back_button(texts, 'menu_subscription')],
                 ]
             ),
@@ -1730,7 +1716,7 @@ async def handle_extend_subscription(
     renewal_lines = [
         '⏰ Продление подписки',
         '',
-        f'Осталось дней: {subscription.days_left}',
+        f'Осталось: {format_time_left(texts, subscription.end_date)}',
         '',
         '<b>Ваша текущая конфигурация:</b>',
         f'🌍 Серверов: {len(subscription.connected_squads or [])}',
@@ -2418,6 +2404,11 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
                 except Exception as conversion_error:
                     logger.error('Ошибка записи конверсии', conversion_error=conversion_error)
 
+            # Оверлей грейса, осевший в подписке (v4.10–4.11), — не её срок и не её
+            # серверы: вернуть до расчёта (страны по умолчанию берутся из подписки).
+            from app.services.grace_access_echo import undo_grace_overlay_echo
+
+            await undo_grace_overlay_echo(db, existing_subscription)
             existing_subscription.is_trial = False
             if was_trial_conversion:
                 # is_trial сбрасывается и при обычном продлении платной подписки —
@@ -2840,7 +2831,11 @@ async def handle_subscription_settings(callback: types.CallbackQuery, db_user: U
     await callback.message.edit_text(
         settings_text,
         reply_markup=get_updated_subscription_settings_keyboard(
-            db_user.language, show_countries, tariff=tariff, subscription=subscription
+            db_user.language,
+            show_countries,
+            tariff=tariff,
+            subscription=subscription,
+            is_legacy_subscription=_legacy_subscription(subscription),
         ),
         parse_mode='HTML',
     )
@@ -4002,6 +3997,10 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_sbp_recurring_enable, F.data == 'sbp_recurring_enable')
 
     dp.callback_query.register(handle_sbp_recurring_cancel, F.data == 'sbp_recurring_cancel')
+
+    dp.callback_query.register(handle_cashera_recurring_enable, F.data == 'cashera_recurring_enable')
+
+    dp.callback_query.register(handle_cashera_recurring_cancel, F.data == 'cashera_recurring_cancel')
 
     dp.callback_query.register(handle_subscription_config_back, F.data == 'subscription_config_back')
 

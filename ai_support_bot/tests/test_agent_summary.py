@@ -75,6 +75,11 @@ async def test_rolling_summary_triggers_every_n_turns(monkeypatch, tmp_path):
     from ai_support_bot.app.db import crud
     from ai_support_bot.app.services import settings_store
 
+    monkeypatch.setattr(settings_store, 'AsyncSessionLocal', database_mod.AsyncSessionLocal)
+    monkeypatch.setattr(settings_store, 'settings', config_mod.settings)
+    monkeypatch.setattr(settings_store, '_cache', {})
+    monkeypatch.setattr(settings_store, '_DEFAULTS', {})
+
     await database_mod.init_db()
     await settings_store.load()
 

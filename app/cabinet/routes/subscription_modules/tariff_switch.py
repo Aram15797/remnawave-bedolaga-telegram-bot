@@ -314,6 +314,10 @@ async def switch_tariff(
 
     user = await lock_user_for_pricing(db, user.id)
 
+    # Оверлей грейса, осевший в подписке (v4.10–4.11), — не её срок: вернуть до расчёта.
+    from app.services.grace_access_echo import undo_grace_overlay_echo
+
+    await undo_grace_overlay_echo(db, subscription)
     remaining_days = remaining_days_for_switch(subscription.end_date)
 
     # Calculate cost (PricingEngine handles all cases: periodic<->periodic, daily->periodic, periodic->daily)
@@ -441,6 +445,7 @@ async def switch_tariff(
 
     # Reset device limit to new tariff base (extra purchased devices are not carried over)
     from app.database.crud.subscription import calc_device_limit_on_tariff_switch
+    from app.services.cashera_recurring_cancel import cancel_cashera_recurring_for_subscription_safe
     from app.services.payment.lava import cancel_lava_recurring_for_subscription_safe
 
     # Смена тарифа делает СБП-привязку Platega несогласованной: она продолжила бы
@@ -452,6 +457,7 @@ async def switch_tariff(
     await cancel_platega_recurring_for_subscription_safe(db, subscription.id)
 
     await cancel_lava_recurring_for_subscription_safe(db, subscription.id)
+    await cancel_cashera_recurring_for_subscription_safe(db, subscription.id)
     # Re-load subscription to avoid MissingGreenlet from expired lazy relationship
     # (subtract_user_balance re-selects User with populate_existing=True which expires relationships)
     await db.refresh(subscription)

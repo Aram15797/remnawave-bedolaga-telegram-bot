@@ -1103,7 +1103,7 @@ async def get_landing_stats(
     # Use EXISTS to avoid fan-out when user has multiple GuestPurchases on the same landing.
     # No external_id filter — see comment in renewals_revenue_query above.
     _gp_alias_daily = GuestPurchase.__table__.alias('gp_daily')
-    day_tx_utc = func.date(func.timezone('UTC', Transaction.created_at))
+    day_tx_utc = local_date_expr(Transaction.created_at, db)
     renewals_daily_result = await db.execute(
         select(
             day_tx_utc.label('day'),

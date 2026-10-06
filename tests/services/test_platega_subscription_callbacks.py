@@ -16,6 +16,8 @@ from app.database.models import (
     AntilopayRecurrent,
     Base,
     PlategaPayment,
+    SavedPaymentMethod,
+    GraceAccessSessionModel,
     PlategaSubscription,
     PromoGroup,
     Subscription,
@@ -60,12 +62,14 @@ async def _memory_session(monkeypatch):
                     Transaction.__table__,
                     User.__table__,
                     PlategaPayment.__table__,
+                    SavedPaymentMethod.__table__,
                     UserPromoGroup.__table__,
                     AntilopayRecurrent.__table__,
                     Tariff.__table__,
                     TrafficPurchase.__table__,
                     PromoGroup.__table__,
                     tariff_promo_groups,
+                    GraceAccessSessionModel.__table__,
                 ],
             )
         )

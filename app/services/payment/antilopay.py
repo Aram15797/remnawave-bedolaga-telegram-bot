@@ -846,12 +846,11 @@ class AntilopayPaymentMixin:
 
         try:
             from app.cabinet.routes.websocket import notify_user_subscription_renewed
-            from app.utils.timezone import format_email_datetime
 
             await notify_user_subscription_renewed(
                 user_id=user.id,
                 subscription_id=subscription.id,
-                new_expires_at=format_email_datetime(updated_subscription.end_date),
+                new_expires_at=updated_subscription.end_date,
                 amount_kopeks=payment.amount_kopeks,
             )
         except Exception as ws_error:
@@ -928,44 +927,10 @@ class AntilopayPaymentMixin:
                 exc_info=True,
             )
 
-    async def cancel_user_antilopay_recurrents(
-        self,
-        db: AsyncSession,
-        user_id: int,
-    ) -> int:
-        """Отменяет активные рекурренты Antilopay пользователя через API и в БД."""
-        if not settings.ANTILOPAY_RECURRENT_ENABLED or not settings.is_antilopay_enabled():
-            return 0
+    async def cancel_user_antilopay_recurrents(self, db: AsyncSession, user_id: int) -> int:
+        from app.services.antilopay_recurring_cancel import cancel_user_antilopay_recurrents
 
-        from app.database.crud.antilopay_recurrent import (
-            deactivate_antilopay_recurrent,
-            get_active_antilopay_recurrents_by_user,
-        )
-
-        recurrents = await get_active_antilopay_recurrents_by_user(db, user_id)
-        cancelled = 0
-        for recurrent in recurrents:
-            try:
-                if recurrent.recurrent_id:
-                    await antilopay_service.cancel_recurrent_payment(recurrent_id=recurrent.recurrent_id)
-                elif recurrent.initial_payment_id:
-                    await antilopay_service.cancel_recurrent_payment(transaction_id=recurrent.initial_payment_id)
-            except Exception as error:
-                if recurrent.recurrent_id and recurrent.initial_payment_id:
-                    try:
-                        await antilopay_service.cancel_recurrent_payment(transaction_id=recurrent.initial_payment_id)
-                    except Exception as fallback_error:
-                        logger.warning('Antilopay: fallback cancellation error', error=fallback_error)
-                logger.warning(
-                    'Antilopay: не удалось отменить рекуррент через API',
-                    recurrent_id=recurrent.recurrent_id,
-                    user_id=user_id,
-                    error=error,
-                )
-            await deactivate_antilopay_recurrent(db, recurrent)
-            cancelled += 1
-        return cancelled
-
+        return await cancel_user_antilopay_recurrents(db, user_id)
 
     async def check_antilopay_payment_status(
         self,

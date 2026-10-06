@@ -60,6 +60,11 @@ async def flow(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_mod.rag_service, 'retrieve', fake_retrieve)
     monkeypatch.setattr(agent_mod, 'build_user_context', fake_user_context)
 
+    monkeypatch.setattr(settings_store, 'AsyncSessionLocal', database_mod.AsyncSessionLocal)
+    monkeypatch.setattr(settings_store, 'settings', config_mod.settings)
+    monkeypatch.setattr(settings_store, '_cache', {})
+    monkeypatch.setattr(settings_store, '_DEFAULTS', {})
+
     await database_mod.init_db()
     await settings_store.load()
     monkeypatch.setitem(settings_store._cache, 'SUMMARY_ENABLED', '0')

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, MagicMock
 
 from app.database.crud import subscription as subscription_crud
 
@@ -9,6 +9,7 @@ async def test_create_trial_subscription_uses_all_available_squads_by_default(mo
     db.add = Mock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
+    db.begin_nested = MagicMock(return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False)))
 
     monkeypatch.setattr('app.database.crud.subscription.get_subscription_by_user_id', AsyncMock(return_value=None))
     monkeypatch.setattr('app.database.crud.subscription.generate_unique_short_id', AsyncMock(return_value='abc123'))
@@ -51,6 +52,7 @@ async def test_extend_subscription_convert_trial_false_keeps_trial(monkeypatch):
 
     monkeypatch.setattr('app.database.crud.subscription._lock_subscription_row', AsyncMock())
     monkeypatch.setattr('app.database.crud.subscription._housekeep_expired_purchases', AsyncMock())
+    monkeypatch.setattr('app.services.grace_access_echo.undo_grace_overlay_echo', AsyncMock(return_value=set()))
     monkeypatch.setattr('app.database.crud.subscription.clear_notifications', AsyncMock())
     monkeypatch.setattr(
         'app.database.crud.tariff.get_tariff_by_id', AsyncMock(return_value=SimpleNamespace(is_daily=False))
@@ -91,6 +93,7 @@ async def test_extend_subscription_default_converts_trial_on_purchase(monkeypatc
 
     monkeypatch.setattr('app.database.crud.subscription._lock_subscription_row', AsyncMock())
     monkeypatch.setattr('app.database.crud.subscription._housekeep_expired_purchases', AsyncMock())
+    monkeypatch.setattr('app.services.grace_access_echo.undo_grace_overlay_echo', AsyncMock(return_value=set()))
     monkeypatch.setattr('app.database.crud.subscription.clear_notifications', AsyncMock())
     monkeypatch.setattr(
         'app.database.crud.tariff.get_tariff_by_id', AsyncMock(return_value=SimpleNamespace(is_daily=False))
