@@ -99,6 +99,7 @@ class PlategaPaymentMixin:
                 from app.services.platega_recurrent import INTERVAL_MONTH
 
                 response = await service.create_subscription(
+                    payer=payer,
                     amount=amount_value,
                     currency=settings.PLATEGA_CURRENCY,
                     interval=INTERVAL_MONTH,
