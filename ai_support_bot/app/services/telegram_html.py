@@ -1,3 +1,4 @@
+import re
 from html import escape
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
@@ -45,4 +46,5 @@ def sanitize_telegram_html(text: str) -> str:
     parser.feed(text)
     parser.close()
     parser.parts.extend(f'</{tag}>' for tag in reversed(parser.stack))
-    return ''.join(parser.parts).strip()
+    rendered = ''.join(parser.parts).strip()
+    return re.sub(r'<code>\s*(https://[^\s<>]+)\s*</code>', r'\1', rendered, flags=re.IGNORECASE)

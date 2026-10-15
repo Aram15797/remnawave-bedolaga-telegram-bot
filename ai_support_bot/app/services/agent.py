@@ -30,6 +30,7 @@ from ai_support_bot.app.services.response_rules import (
     deduplicate_answer,
     handoff_answer,
     is_payment_missing,
+    is_topup_without_renewal,
     keeps_account_scope,
     mandatory_handoff,
     payment_next_step,
@@ -373,10 +374,16 @@ class SupportAgent:
         if not forced_reason and image_url and not settings_store.get_bool('VISION_ENABLED') and not question.strip():
             direct_answer = 'Анализ изображений сейчас отключён. Опишите, что показано на фото, и какую проблему нужно решить.'
         if not forced_reason and not direct_answer and not image_url and settings_store.get_bool('NAVIGATION_ENABLED'):
+            nav_query = build_nav_query(question, history, summary)
+            if is_topup_without_renewal(question):
+                surface = navigation_tool.resolve_surface(nav_query)
+                nav_query = 'Как продлить подписку?' + {'web': ' На сайте', 'bot': ' В Telegram-боте'}.get(surface, '')
             direct_answer = await navigation_tool.answer_request(
-                build_nav_query(question, history, summary), await resolve_user_language(telegram_id),
+                nav_query, await resolve_user_language(telegram_id),
                 ttl_seconds=settings_store.get_int('NAVIGATION_TTL'),
             )
+            if direct_answer and is_topup_without_renewal(question):
+                direct_answer = 'Пополнение баланса и продление — разные операции. Само пополнение не означает немедленного продления подписки.\n\nДля ручного продления:\n' + direct_answer
         if is_payment_missing(question):
             if support_state.get('issue') != 'payment_missing':
                 support_state = {'issue': 'payment_missing'}

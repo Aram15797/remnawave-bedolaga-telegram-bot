@@ -108,6 +108,12 @@ def is_payment_missing(question: str) -> bool:
     ))
 
 
+def is_topup_without_renewal(question: str) -> bool:
+    return bool(re.search(r'(?<!не )пополнил\w*\s+баланс', question, re.IGNORECASE)) and bool(
+        re.search(r'подписк\w*\s+не\s+продл|не\s+продл\w*\s+подписк', question, re.IGNORECASE)
+    ) and not re.search(r'списал|списан|авто|статус|когда|достат|не приш|не зачис', question, re.IGNORECASE)
+
+
 def compact_knowledge(knowledge: list[dict], max_chars: int = 2400) -> list[dict]:
     result = []
     remaining = max_chars

@@ -81,3 +81,20 @@ def test_complete_payment_intake_hands_off_without_repeating_receipt_request():
     assert escalate
     assert 'Передаю' in answer
     assert 'Пришлите' not in answer
+
+
+def test_https_url_in_code_becomes_plain_clickable_url():
+    assert sanitize_telegram_html('<code>https://web.slig.app/balance?a=1&amp;b=2</code>') == 'https://web.slig.app/balance?a=1&amp;b=2'
+    assert sanitize_telegram_html('<code> HTTPS://web.slig.app </code>') == 'HTTPS://web.slig.app'
+    assert sanitize_telegram_html('<code>some-token</code>') == '<code>some-token</code>'
+
+
+@pytest.mark.parametrize('question', [
+    'Деньги списали за продление, но подписка не продлилась',
+    'Не пополнил баланс, подписка не продлилась',
+    'Пополнил баланс, а подписка не продлилась. Когда сработает автоплатёж?',
+])
+def test_personal_payment_questions_are_not_generic_renewal_guidance(question):
+    from ai_support_bot.app.services.response_rules import is_topup_without_renewal
+
+    assert not is_topup_without_renewal(question)

@@ -545,3 +545,24 @@ async def test_technical_issue_does_not_continue_previous_payment_intake(flow):
         assert conversation.support_state == {'issue': 'other'}
     assert result['answer'] == captured['reply']
     assert 'регистрировались' not in result['answer']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('suffix', 'required', 'forbidden'), [
+    ('Почему?', 'https://web.slig.app/subscriptions', ''),
+    ('На сайте. Почему?', 'https://web.slig.app/subscriptions', 'https://t.me/'),
+    ('В Telegram-боте. Почему?', 'https://t.me/SligVPN_bot', 'https://web.slig.app'),
+])
+async def test_generic_topup_without_renewal_has_correct_navigation(flow, suffix, required, forbidden):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Пополнил баланс, а подписка не продлилась. ' + suffix)
+    assert required in result['answer']
+    if forbidden:
+        assert forbidden not in result['answer']
+    else:
+        assert 'https://t.me/SligVPN_bot' in result['answer']
+    assert '<code>https://' not in result['answer']
+    assert not result['escalate']
+    assert not captured['prompts']
+    assert not captured['queries']

@@ -67,7 +67,7 @@ def scenarios(email: str) -> dict[str, tuple[Turn, ...]]:
             Turn('Не могу сейчас прислать чек. Передайте обращение для проверки.', True),
         ),
         'renewal': (
-            Turn('Пополнил баланс, а подписка не продлилась. Почему?'),
+            Turn('Пополнил баланс, а подписка не продлилась. Почему?', False, ('https://t.me/SligVPN_bot', 'https://web.slig.app/subscriptions')),
             Turn('Где продлить подписку на сайте?', required=('https://web.slig.app',)),
             Turn('Деньги списали именно за продление, но срок подписки не изменился. Нужна проверка.', True),
         ),
@@ -112,6 +112,8 @@ def checks(turn: Turn, result: dict) -> list[str]:
         issues.append('служебный маркер попал в пользовательский ответ')
     if re.search(r'не обещай|не предлагай|не просите пользователя|список приходит с сервера', result['answer'], re.IGNORECASE):
         issues.append('внутренняя инструкция попала в пользовательский ответ')
+    if re.search(r'<code>\s*https://', result['answer'], re.IGNORECASE):
+        issues.append('HTTPS-ссылка оформлена как код вместо кликабельной ссылки')
     return issues
 
 

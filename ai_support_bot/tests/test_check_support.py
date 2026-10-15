@@ -53,3 +53,8 @@ async def test_live_check_reads_live_knowledge_but_stores_conversation_separatel
 def test_live_checks_detect_internal_instruction_leaks(answer):
     issues = check_support.checks(check_support.Turn('Где это на сайте?'), {'answer': answer, 'escalate': False})
     assert 'внутренняя инструкция попала в пользовательский ответ' in issues
+
+
+def test_live_checks_detect_unclickable_code_url():
+    result = {'answer': '<code>https://web.slig.app</code>', 'escalate': False}
+    assert 'HTTPS-ссылка оформлена как код вместо кликабельной ссылки' in check_support.checks(check_support.Turn('Как продлить?'), result)
