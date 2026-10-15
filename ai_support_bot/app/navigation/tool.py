@@ -10,6 +10,7 @@ from ai_support_bot.app.navigation.query import navigation_target
 from ai_support_bot.app.navigation.renderer import node_to_dict, render_matches, render_node, render_overview, web_url
 from ai_support_bot.app.navigation.schema import NavTree
 from ai_support_bot.app.navigation.search import search
+from ai_support_bot.app.navigation.web import PUBLIC_WEB_HELP
 
 
 logger = structlog.get_logger(__name__)
@@ -184,7 +185,10 @@ async def answer_request(query: str, language: str = 'ru', ttl_seconds: int = 0)
         return None
     surface = resolve_surface(query)
     if surface == 'web' and _wants_overview(query):
-        return render_overview(tree, surface='web')
+        sections = [node for node in tree.iter_nodes() if node.available_in_web and node.id != 'main_menu' and len(node.web_steps) == 1]
+        return 'Разделы сайта:\n\n' + '\n'.join(
+            f'• {node.web_label}: {web_url(tree, node)}' for node in sections
+        ) + '\n\nНекоторые разделы доступны только при включённой функции. На телефоне дополнительные разделы находятся в «Меню».'
     target_id = navigation_target(query)
     node = tree.get(target_id or '')
     if node is None:
@@ -192,12 +196,8 @@ async def answer_request(query: str, language: str = 'ru', ttl_seconds: int = 0)
     blocks = []
     if surface != 'bot' and node.available_in_web:
         block = 'На сайте: ' + web_url(tree, node) + '\nПуть: ' + ' → '.join(node.web_steps) + '.'
-        if target_id == 'promocode':
-            block += '\nВведите код в поле «Промокод», затем нажмите «Активировать».'
-        elif target_id == 'subscription_connect':
-            block += '\nВыберите платформу и приложение, затем следуйте инструкции подключения.'
-        elif node.web_hint:
-            block += '\n' + node.web_hint
+        if help_text := PUBLIC_WEB_HELP.get(target_id):
+            block += '\n' + help_text
         blocks.append(block)
     if surface != 'web' and node.available_in_bot:
         path = node_to_dict(tree, node, depth=0)['bot_path']

@@ -150,3 +150,28 @@ async def test_lite_inline_controls_do_not_require_full_settings(node_id, compon
     node = tree.get(node_id)
     assert 'Все настройки подписки' not in node.web_steps
     assert '?full=1' not in node.web_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('query', [
+    'Где на сайте найти выигранный код колеса?',
+    'Как продлить подписку на сайте?',
+    'Как изменить email на сайте?',
+    'Где пополнить баланс на сайте?',
+])
+async def test_public_navigation_never_copies_internal_hints(query, monkeypatch):
+    from ai_support_bot.app.navigation import tool
+
+    tree = await build_navigation_tree('ru')
+    for node in tree.iter_nodes():
+        node.web_hint = 'INTERNAL_ONLY: не обещай и не предлагай'
+
+    async def resolve(*args):
+        return tree
+
+    monkeypatch.setattr(tool, '_resolve_tree', resolve)
+    answer = await tool.answer_request(query)
+    assert 'https://web.slig.app' in answer
+    assert 'INTERNAL_ONLY' not in answer
+    assert 'не обещай' not in answer
+    assert 'не предлагай' not in answer

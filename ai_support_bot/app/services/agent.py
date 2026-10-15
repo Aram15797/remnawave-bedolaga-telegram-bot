@@ -25,12 +25,16 @@ from ai_support_bot.app.services.rag_service import rag_service
 from ai_support_bot.app.services.response_rules import (
     NOTICE,
     apps_answer,
+    boundary_answer,
     compact_knowledge,
     deduplicate_answer,
     handoff_answer,
     is_payment_missing,
+    keeps_account_scope,
     mandatory_handoff,
+    payment_next_step,
     smalltalk_answer,
+    starts_technical_issue,
     unsupported_price,
 )
 from ai_support_bot.app.services.service_catalog import build_service_catalog, build_user_offers
@@ -363,7 +367,7 @@ class SupportAgent:
             smalltalk = False
 
         forced_reason = mandatory_handoff(question, history)
-        direct_answer = None if forced_reason or image_url else apps_answer(question, history)
+        direct_answer = None if forced_reason or image_url else boundary_answer(question) or apps_answer(question, history)
         if smalltalk and not forced_reason and not direct_answer:
             direct_answer = smalltalk_answer(question)
         if not forced_reason and image_url and not settings_store.get_bool('VISION_ENABLED') and not question.strip():
@@ -377,12 +381,15 @@ class SupportAgent:
             if support_state.get('issue') != 'payment_missing':
                 support_state = {'issue': 'payment_missing'}
             smalltalk = False
-        elif direct_answer and (support_state.get('issue') == 'payment_missing' or support_state.get('email') or support_state.get('attachment_file_id')):
+        elif (direct_answer or starts_technical_issue(question)) and (support_state.get('issue') == 'payment_missing' or support_state.get('email') or support_state.get('attachment_file_id')):
             support_state = {'issue': 'other'}
         if forced_reason == 'partnership':
             support_state = {'issue': 'other'}
 
-        email = extract_reported_email(question) or support_state.get('email')
+        reported_email = extract_reported_email(question)
+        if support_state.get('issue') != 'payment_missing' and support_state.get('email') and not reported_email and not keeps_account_scope(question):
+            support_state = {'issue': 'other'}
+        email = reported_email or support_state.get('email')
         user_context = ''
         if not smalltalk and not forced_reason and not direct_answer:
             user_context = await build_user_context(telegram_id, email=email) if email else await build_user_context(telegram_id)
@@ -487,6 +494,8 @@ class SupportAgent:
                 _response_cache.set(cache_key, answer_text)
 
         escalate = has_escalation_marker(answer_text)
+        if not escalate and not direct_answer and support_state.get('issue') == 'payment_missing':
+            answer_text, escalate = payment_next_step(support_state)
         answer_text = deduplicate_answer(strip_escalation_marker(answer_text))
         if not answer_text:
             answer_text = NOTICE

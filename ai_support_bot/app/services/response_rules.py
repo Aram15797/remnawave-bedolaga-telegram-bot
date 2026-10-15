@@ -11,6 +11,36 @@ CLIENTS = {
 }
 
 
+def boundary_answer(question: str) -> str | None:
+    if re.search(r'(?:покажи|раскрой|пришли|выведи|напиши|повтори).*?(?:системн\w* (?:промпт|инструкц)|внутренн\w* инструкц)', question, re.IGNORECASE):
+        return 'Внутренние инструкции не раскрываю. Могу помочь с вопросами по SligVPN.'
+    return None
+
+
+def keeps_account_scope(question: str) -> bool:
+    return bool(re.search(r'баланс|подписк|аккаунт|email|почт|ссылк|плат[её]ж|операци|данные|тот же|этот же|\bтам\b|^\s*(?:да|нет|покажи|проверь)\b', question, re.IGNORECASE))
+
+
+def starts_technical_issue(question: str) -> bool:
+    return bool(re.search(r'vpn|впн|incy|happ|сервер|интернет', question, re.IGNORECASE)) and bool(
+        re.search(r'не работает|не подключ|ошибк|нет интернет|обрыв', question, re.IGNORECASE)
+    ) and not re.search(r'плат[её]ж|оплат|попол|деньги|списал', question, re.IGNORECASE)
+
+
+def payment_next_step(state: dict) -> tuple[str, bool]:
+    channel = state.get('purchase_channel')
+    if channel not in {'site', 'telegram'}:
+        return 'Где вы оплачивали: на сайте или в Telegram-боте?', False
+    if channel == 'site':
+        if state.get('registration_method') not in {'email', 'telegram', 'other'}:
+            return 'На сайте вы регистрировались через электронную почту или другим способом?', False
+        if state.get('registration_method') == 'email' and not state.get('email'):
+            return 'Напишите адрес электронной почты, с которым регистрировались на сайте.', False
+    if not state.get('receipt_reported'):
+        return 'Пришлите чек или выписку по этой операции, где видны сумма, время и идентификатор платежа. Остальные операции и данные карты можно скрыть.', False
+    return NOTICE, True
+
+
 def smalltalk_answer(question: str) -> str | None:
     text = question.strip().casefold().rstrip('!. 🙂😊👍')
     if text in {'привет', 'здравствуйте', 'доброе утро', 'добрый день', 'добрый вечер'}:

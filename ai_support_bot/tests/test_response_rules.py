@@ -57,3 +57,27 @@ def test_past_ticket_private_links_and_emails_do_not_reach_model():
     assert 'other@example.com' not in knowledge[0]['content']
     assert 'secret-token' not in knowledge[0]['content']
     assert 'скрыт' in knowledge[0]['content']
+
+
+@pytest.mark.parametrize(('state', 'expected'), [
+    ({'receipt_reported': True}, 'Где вы оплачивали'),
+    ({'purchase_channel': 'site', 'receipt_reported': True}, 'регистрировались'),
+    ({'purchase_channel': 'site', 'registration_method': 'email'}, 'адрес электронной почты'),
+    ({'purchase_channel': 'telegram'}, 'Пришлите чек'),
+])
+def test_payment_intake_asks_only_next_missing_detail(state, expected):
+    from ai_support_bot.app.services.response_rules import payment_next_step
+
+    answer, escalate = payment_next_step(state)
+    assert expected in answer
+    assert answer.count('?') <= 1
+    assert not escalate
+
+
+def test_complete_payment_intake_hands_off_without_repeating_receipt_request():
+    from ai_support_bot.app.services.response_rules import payment_next_step
+
+    answer, escalate = payment_next_step({'purchase_channel': 'site', 'registration_method': 'email', 'email': 'buyer@example.com', 'receipt_reported': True})
+    assert escalate
+    assert 'Передаю' in answer
+    assert 'Пришлите' not in answer

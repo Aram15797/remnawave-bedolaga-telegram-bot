@@ -47,3 +47,9 @@ async def test_live_check_reads_live_knowledge_but_stores_conversation_separatel
             count = await db.scalar(select(func.count(Conversation.id)))
             assert count == 0
         assert 'Передаю предложение команде.' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('answer', ['не обещай наличие кнопки', 'не предлагай вращать ещё раз', 'список приходит с сервера'])
+def test_live_checks_detect_internal_instruction_leaks(answer):
+    issues = check_support.checks(check_support.Turn('Где это на сайте?'), {'answer': answer, 'escalate': False})
+    assert 'внутренняя инструкция попала в пользовательский ответ' in issues
