@@ -12,12 +12,16 @@ from ai_support_bot.app.bot import bot as bot_mod
 class FakeBot:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.photos: list[tuple[int, str]] = []
 
     async def send_message(self, chat_id, text, parse_mode=None):
         self.sent.append((chat_id, text))
 
     async def send_chat_action(self, chat_id, action):
         return None
+
+    async def send_photo(self, chat_id, photo, caption=None):
+        self.photos.append((chat_id, photo))
 
 
 class FakeUser:
@@ -100,6 +104,32 @@ async def test_escalation_notice_goes_to_user_and_service_text_to_admins(monkeyp
     for text in message.answers:
         assert 'Обращение требует внимания оператора' not in text
         assert 'ID: <code>' not in text
+
+
+@pytest.mark.asyncio
+async def test_yes_reaches_agent_instead_of_local_smalltalk_reply(monkeypatch):
+    _patch_settings(monkeypatch, {'THROTTLE_SECONDS': 0, 'DAILY_MESSAGE_LIMIT': 0})
+    _patch_agent(monkeypatch, {
+        'answer': 'Напишите email аккаунта.', 'escalate': False, 'knowledge_used': 0,
+        'model': 'gpt-5.4-mini',
+    })
+    message = FakeMessage(user_id=555, text='да')
+    await bot_mod.handle_message(message)
+    assert message.answers == ['Напишите email аккаунта.']
+
+
+@pytest.mark.asyncio
+async def test_saved_attachment_goes_only_to_admin_recipients(monkeypatch):
+    _patch_settings(monkeypatch, {'THROTTLE_SECONDS': 0, 'DAILY_MESSAGE_LIMIT': 0})
+    _patch_agent(monkeypatch, {
+        'answer': 'Передаю обращение команде.', 'escalate': True, 'knowledge_used': 0,
+        'model': 'rules', 'support_photo': 'telegram-photo-id',
+    })
+    monkeypatch.setattr(bot_mod.settings, 'ADMIN_IDS', '555,999')
+    message = FakeMessage(user_id=555, text='Передайте <обращение> на проверку')
+    await bot_mod.handle_message(message)
+    assert message.bot.photos == [(999, 'telegram-photo-id')]
+    assert '&lt;обращение&gt;' in message.bot.sent[0][1]
 
 
 @pytest.mark.asyncio

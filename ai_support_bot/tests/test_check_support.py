@@ -8,6 +8,17 @@ from ai_support_bot import check_support
 from ai_support_bot.app.db.models import Conversation
 
 
+def test_live_checks_catch_empty_repeated_and_wrong_topic_answers():
+    turn = check_support.Turn('Как подключить VPN?', forbidden=('Stars',))
+    result = {'answer': '<b></b>', 'escalate': True}
+    assert 'пустой пользовательский ответ' in check_support.checks(turn, result)
+    text = 'Для подключения VPN перезапустите устройство и откройте приложение Incy. Проверьте свою подписку.'
+    result['answer'] = text + '\n' + text
+    assert 'ответ повторяется целиком' in check_support.checks(turn, result)
+    result['answer'] = 'Пополните баланс через Stars'
+    assert any('Stars' in issue for issue in check_support.checks(turn, result))
+
+
 @pytest.mark.asyncio
 async def test_live_check_reads_live_knowledge_but_stores_conversation_separately(monkeypatch, capsys):
     async with check_support.isolated_history() as live_session:

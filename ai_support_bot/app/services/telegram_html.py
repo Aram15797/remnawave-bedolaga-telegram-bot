@@ -1,0 +1,48 @@
+from html import escape
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
+
+
+class _TelegramHTML(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.stack: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = {'strong': 'b', 'em': 'i'}.get(tag, tag)
+        if tag in {'b', 'i', 'code'}:
+            self.parts.append(f'<{tag}>')
+            self.stack.append(tag)
+        elif tag == 'a':
+            href = dict(attrs).get('href') or ''
+            try:
+                parsed = urlsplit(href)
+                valid = parsed.scheme == 'https' and parsed.hostname and not parsed.username and not any(ord(c) < 32 for c in href)
+            except ValueError:
+                valid = False
+            if valid:
+                self.parts.append(f'<a href="{escape(href, quote=True)}">')
+                self.stack.append('a')
+        elif tag == 'br':
+            self.parts.append('\n')
+
+    def handle_endtag(self, tag):
+        tag = {'strong': 'b', 'em': 'i'}.get(tag, tag)
+        if tag in self.stack:
+            while self.stack:
+                current = self.stack.pop()
+                self.parts.append(f'</{current}>')
+                if current == tag:
+                    break
+
+    def handle_data(self, data):
+        self.parts.append(escape(data, quote=False))
+
+
+def sanitize_telegram_html(text: str) -> str:
+    parser = _TelegramHTML()
+    parser.feed(text)
+    parser.close()
+    parser.parts.extend(f'</{tag}>' for tag in reversed(parser.stack))
+    return ''.join(parser.parts).strip()

@@ -6,7 +6,8 @@ from typing import Any
 import structlog
 
 from ai_support_bot.app.navigation import registry
-from ai_support_bot.app.navigation.renderer import node_to_dict, render_matches, render_node, render_overview
+from ai_support_bot.app.navigation.query import navigation_target
+from ai_support_bot.app.navigation.renderer import node_to_dict, render_matches, render_node, render_overview, web_url
 from ai_support_bot.app.navigation.schema import NavTree
 from ai_support_bot.app.navigation.search import search
 
@@ -88,8 +89,10 @@ async def lookup(
             'found': True, 'overview': True, 'text': render_overview(tree, surface=surface),
             'nodes': [], 'language': tree.language, 'tree_size': tree.size, 'sources': list(tree.sources),
         }
-    matches = search(tree, query or '', limit=max(1, min(limit, 5)), surface=surface)
-    nodes = [match.node for match in matches]
+    target = tree.get(navigation_target(query or '') or '')
+    target_available = target is not None and (surface != 'web' or target.available_in_web) and (surface != 'bot' or target.available_in_bot)
+    matches = [] if target_available else search(tree, query or '', limit=max(1, min(limit, 5)), surface=surface)
+    nodes = [target] if target_available else [match.node for match in matches]
 
     blocks: list[str] = []
     if nodes:
@@ -167,3 +170,36 @@ async def build_prompt_block(
         'ничего не придумывай):'
     )
     return f'{header}\n{body}'
+
+
+async def answer_request(query: str, language: str = 'ru', ttl_seconds: int = 0) -> str | None:
+    if not re.search(r'как|где|инструкци|покажи|какие разделы', query, re.IGNORECASE):
+        return None
+    if re.search(r'не работает|не продл|не приш|не поступ|не зачис|сколько|почему', query, re.IGNORECASE):
+        return None
+    if language != 'ru':
+        return None
+    tree = await _resolve_tree(language, ttl_seconds)
+    if tree is None:
+        return None
+    surface = resolve_surface(query)
+    if surface == 'web' and _wants_overview(query):
+        return render_overview(tree, surface='web')
+    target_id = navigation_target(query)
+    node = tree.get(target_id or '')
+    if node is None:
+        return None
+    blocks = []
+    if surface != 'bot' and node.available_in_web:
+        block = 'На сайте: ' + web_url(tree, node) + '\nПуть: ' + ' → '.join(node.web_steps) + '.'
+        if target_id == 'promocode':
+            block += '\nВведите код в поле «Промокод», затем нажмите «Активировать».'
+        elif target_id == 'subscription_connect':
+            block += '\nВыберите платформу и приложение, затем следуйте инструкции подключения.'
+        elif node.web_hint:
+            block += '\n' + node.web_hint
+        blocks.append(block)
+    if surface != 'web' and node.available_in_bot:
+        path = node_to_dict(tree, node, depth=0)['bot_path']
+        blocks.append('В Telegram: https://t.me/SligVPN_bot\n' + str(path))
+    return '\n\n'.join(blocks) or None

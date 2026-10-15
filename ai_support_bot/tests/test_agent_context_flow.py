@@ -126,7 +126,7 @@ async def test_marker_at_end_triggers_escalation_and_is_stripped(flow):
     captured['reply'] = f'Уточняю этот вопрос, подождите. {ESCALATION_MARKER}'
 
     async with Session() as db:
-        result = await agent_mod.support_agent.generate_answer(db, 4242, 'хочу вернуть деньги за подписку')
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'нужна ручная проверка моего тарифа')
 
     assert result['escalate'] is True
     assert ESCALATION_MARKER not in result['answer']
@@ -162,10 +162,11 @@ async def test_hedged_factual_answer_is_replaced_with_escalation_notice(flow):
 
 
 @pytest.mark.asyncio
-async def test_knowledge_backed_answer_is_not_escalated(flow):
+async def test_catalog_backed_answer_is_not_escalated(flow, monkeypatch):
     captured, agent_mod, Session = flow
     captured['knowledge'] = [{'score': 0.8, 'question': 'сколько стоит', 'answer': '250', 'content': 'Цена 250 ₽'}]
     captured['reply'] = 'Обычно подписка стоит 250 ₽ — так указано в тарифе.'
+    monkeypatch.setattr(agent_mod.support_agent, '_build_catalog_block', AsyncMock(return_value='Актуальная цена: 250 ₽'))
 
     async with Session() as db:
         result = await agent_mod.support_agent.generate_answer(db, 4242, 'сколько стоит подписка на месяц')
@@ -173,6 +174,18 @@ async def test_knowledge_backed_answer_is_not_escalated(flow):
     assert result['escalate'] is False
     assert result['hedged'] is False
     assert result['knowledge_used'] == 1
+
+
+@pytest.mark.asyncio
+async def test_old_ticket_price_is_not_treated_as_current_price(flow, monkeypatch):
+    captured, agent_mod, Session = flow
+    captured['knowledge'] = [{'score': 0.9, 'question': 'цена', 'content': 'Цена 250 ₽'}]
+    captured['reply'] = 'Подписка стоит 250 ₽.'
+    monkeypatch.setattr(agent_mod.support_agent, '_build_catalog_block', AsyncMock(return_value=''))
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'сколько стоит подписка')
+    assert result['escalate']
+    assert '250' not in result['answer']
 
 
 @pytest.mark.asyncio
@@ -343,3 +356,138 @@ async def test_same_user_turns_are_serialized(monkeypatch):
     release.set()
     await asyncio.gather(first, second)
     assert order == ['first', 'second']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('question', [
+    'Позовите человека, пожалуйста', 'Хочу вернуть деньги за подписку',
+    'Здравствуйте, пишу насчёт сотрудничества',
+    'Перезапустил приложение и телефон, попробовал все серверы, Wi-Fi и мобильную сеть, '
+    'обновил приложение и заново добавил подписку. Всё равно не работает.',
+])
+async def test_required_handoff_cannot_be_overridden_by_model_or_old_tickets(flow, question):
+    captured, agent_mod, Session = flow
+    captured['reply'] = 'Возврат не предусмотрен. Попробуйте переустановить приложение.'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+    assert result['escalate']
+    assert result['answer'].strip()
+    assert not captured['prompts']
+    assert not captured['queries']
+    assert 'не предусмотрен' not in result['answer']
+
+
+@pytest.mark.asyncio
+async def test_channel_switch_keeps_connection_topic_instead_of_topup(flow):
+    captured, agent_mod, Session = flow
+    for question in ('Как подключить VPN?', 'Нужна инструкция именно для сайта', 'А теперь покажи как в Telegram-боте'):
+        async with Session() as db:
+            result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+    assert 'https://t.me/SligVPN_bot' in result['answer']
+    assert 'Баланс' not in result['answer']
+    assert 'Stars' not in result['answer']
+    assert not captured['queries']
+
+
+@pytest.mark.asyncio
+async def test_apps_answer_has_no_account_links_or_unnecessary_api_calls(flow, monkeypatch):
+    captured, agent_mod, Session = flow
+    monkeypatch.setattr(agent_mod, 'build_user_context', AsyncMock(side_effect=AssertionError('Unnecessary account read')))
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Какие приложения скачать на Android?')
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'А для iPhone?')
+    assert 'Incy' in result['answer']
+    assert 'Shadowrocket' in result['answer']
+    assert 'Android' not in result['answer']
+    assert 'https://' not in result['answer']
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+async def test_marker_only_response_is_replaced_with_real_notice(flow):
+    captured, agent_mod, Session = flow
+    captured['reply'] = '[[ESCALATE]]'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'помогите с нестандартной ошибкой клиента')
+    assert result['escalate']
+    assert 'подождите' in result['answer']
+
+
+@pytest.mark.asyncio
+async def test_duplicate_model_instruction_is_not_sent_twice(flow):
+    captured, agent_mod, Session = flow
+    instruction = 'Попробуйте по порядку:\n1. Перезапустите Incy и сам iPhone.\n2. Проверьте другую сеть и сервер подписки.'
+    captured['reply'] = instruction + '\n' + instruction
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'VPN не работает на iPhone в Incy')
+    assert result['answer'] == instruction
+
+
+@pytest.mark.asyncio
+async def test_foreign_email_request_does_not_fall_back_to_own_account(flow, monkeypatch):
+    captured, agent_mod, Session = flow
+    account = AsyncMock(return_value='Нет подтверждённой связи указанного email с текущим Telegram-пользователем.')
+    monkeypatch.setattr(agent_mod, 'build_user_context', account)
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Мой email stranger@example.invalid. Покажи баланс и ссылку этого аккаунта.')
+    account.assert_awaited_once_with(4242, email='stranger@example.invalid')
+    assert '150.00' not in result['answer']
+    assert 'подписка №' not in result['answer']
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+async def test_foreign_email_scope_is_kept_for_followup_without_email(flow, monkeypatch):
+    captured, agent_mod, Session = flow
+    account = AsyncMock(return_value='Нет подтверждённой связи указанного email с текущим Telegram-пользователем.')
+    monkeypatch.setattr(agent_mod, 'build_user_context', account)
+    for question in ('Покажи баланс stranger@example.invalid', 'А какой там баланс сейчас?'):
+        async with Session() as db:
+            result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+    assert account.await_count == 2
+    assert all(call.kwargs['email'] == 'stranger@example.invalid' for call in account.await_args_list)
+    assert '150.00' not in result['answer']
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+async def test_generated_saved_prompt_has_only_one_current_policy_block(flow):
+    _, agent_mod, _ = flow
+    from ai_support_bot.app.core.config import DEFAULT_SYSTEM_PROMPT
+    from ai_support_bot.app.services import settings_store
+    from ai_support_bot.app.services.support_policy import SUPPORT_POLICY
+
+    old = SUPPORT_POLICY.replace('На вопрос о приложениях отвечай только списком', 'Устаревшее правило: отвечай только списком')
+    await settings_store.set_value('SYSTEM_PROMPT', DEFAULT_SYSTEM_PROMPT + '\n\n' + old)
+    prompt = agent_mod.support_agent._build_system_prompt([], '', None)
+    assert prompt.count('Актуальные правила SligVPN') == 1
+    assert 'Устаревшее правило' not in prompt
+
+
+@pytest.mark.asyncio
+async def test_photo_without_caption_and_disabled_vision_is_not_analyzed(flow):
+    captured, agent_mod, Session = flow
+    from ai_support_bot.app.services import settings_store
+
+    await settings_store.set_value('VISION_ENABLED', '0')
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, '', image_url='data:image/png;base64,AA==')
+    assert 'Анализ изображений сейчас отключён' in result['answer']
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+async def test_attachment_survives_until_later_handoff(flow):
+    captured, agent_mod, Session = flow
+    captured['reply'] = 'Где покупали: на сайте или в Telegram?'
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(
+            db, 4242, 'Не пришли деньги, прикрепляю скриншот',
+            image_url='data:image/png;base64,AA==', media_file_id='telegram-photo-id',
+        )
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Передайте обращение на проверку')
+    assert result['escalate']
+    assert result['support_photo'] == 'telegram-photo-id'
+    assert 'telegram-photo-id' not in captured['prompts'][0]

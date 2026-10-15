@@ -18,13 +18,13 @@ async def test_intake_preserves_and_corrects_details_across_turns(monkeypatch):
         {'receipt_reported': True},
     ):
         result = await dialogue_tools.execute_support_tool(
-            'save_support_details', json.dumps(args), 42, state, 'customer@example.com',
+            'save_support_details', json.dumps(args), 42, state, 'Не пришли деньги, покупал на сайте, customer@example.com',
         )
         assert result['saved']
     assert state['email'] == 'customer@example.com'
     assert state['receipt_reported'] is True
     await dialogue_tools.execute_support_tool(
-        'save_support_details', '{"purchase_channel":"telegram"}', 42, state, '',
+        'save_support_details', '{"purchase_channel":"telegram"}', 42, state, 'Ошибся, покупал в Telegram',
     )
     assert 'email' not in state
     assert 'registration_method' not in state

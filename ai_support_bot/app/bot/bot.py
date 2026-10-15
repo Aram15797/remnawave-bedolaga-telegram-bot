@@ -1,8 +1,6 @@
 import asyncio
 import base64
 import io
-import random
-import re
 import time
 from contextlib import asynccontextmanager
 from html import escape
@@ -18,51 +16,8 @@ from ai_support_bot.app.core.config import settings
 from ai_support_bot.app.db import crud
 from ai_support_bot.app.db.database import AsyncSessionLocal
 from ai_support_bot.app.services import alerting, settings_store
-from ai_support_bot.app.services.agent import _is_smalltalk, support_agent
+from ai_support_bot.app.services.agent import support_agent
 from ai_support_bot.app.services.openai_client import OpenAIError
-
-
-_GREETING_PATTERNS = [r'привет\w*', r'здравств\w*', r'хай', r'hi', r'hello', r'добр(ое|ый|ой)', r'утро', r'день', r'вечер']
-_THANKS_PATTERNS = [r'спасибо\w*', r'благодар\w*', r'спс', r'пасиб\w*', r'сяб', r'мерси']
-_ACK_PATTERNS = [r'понял\w*', r'ясно', r'хорошо', r'ок\w*', r'окей', r'ладно', r'отлично', r'супер', r'класс', r'круто', r'ага', r'угу', r'помогло', r'заработало', r'принято']
-
-_GREETING_REPLIES = [
-    'Здравствуйте! Чем могу помочь по сервису? 🙂',
-    'Приветствую! Опишите ваш вопрос, постараюсь помочь. 🙌',
-    'Здравствуйте! Задавайте вопрос, я на связи. 🙂',
-]
-
-_THANKS_REPLIES = [
-    'Пожалуйста! Рад был помочь. 😊',
-    'Всегда пожалуйста! Если возникнут вопросы — обращайтесь. 🤝',
-    'Пожалуйста! Рад, что всё получилось. ✨',
-]
-
-_ACK_REPLIES = [
-    'Отлично! Обращайтесь, если появятся вопросы. 👍',
-    'Хорошо! Рад был помочь. 🤝',
-    'Понял вас! Всегда на связи, если что-то понадобится. 🙂',
-]
-
-_GENERAL_SMALLTALK_REPLIES = [
-    'Всё отлично, спасибо! Готов помочь с вопросами по VPN. 🙂',
-    'Всё хорошо! Чем могу помочь?',
-]
-
-
-def get_smalltalk_reply(question: str) -> str:
-    q = (question or '').lower().strip()
-
-    if any(re.search(p, q, re.IGNORECASE) for p in _THANKS_PATTERNS):
-        return random.choice(_THANKS_REPLIES)
-
-    if any(re.search(p, q, re.IGNORECASE) for p in _ACK_PATTERNS):
-        return random.choice(_ACK_REPLIES)
-
-    if any(re.search(p, q, re.IGNORECASE) for p in _GREETING_PATTERNS):
-        return random.choice(_GREETING_REPLIES)
-
-    return random.choice(_GENERAL_SMALLTALK_REPLIES)
 
 
 logger = structlog.get_logger(__name__)
@@ -155,8 +110,8 @@ async def cmd_start(message: Message) -> None:
 
 
 def _user_label(message: Message) -> tuple[str, str]:
-    user_name = message.from_user.full_name or 'Пользователь'
-    username_str = f' (@{message.from_user.username})' if message.from_user.username else ''
+    user_name = escape(message.from_user.full_name or 'Пользователь')
+    username_str = f' (@{escape(message.from_user.username)})' if message.from_user.username else ''
     return user_name, username_str
 
 
@@ -171,10 +126,12 @@ def _admin_recipients(exclude_telegram_id: int | None = None) -> list[int]:
     return recipients
 
 
-async def _notify_admins(bot: Bot, text: str, exclude_telegram_id: int | None = None) -> None:
+async def _notify_admins(bot: Bot, text: str, exclude_telegram_id: int | None = None, photo: str | None = None) -> None:
     for admin_id in _admin_recipients(exclude_telegram_id):
         try:
             await bot.send_message(admin_id, text, parse_mode='HTML')
+            if photo:
+                await bot.send_photo(admin_id, photo, caption=f'Вложение к обращению пользователя {exclude_telegram_id}')
         except Exception as err:
             logger.warning('Failed to notify admin', admin_id=admin_id, error=str(err))
 
@@ -215,7 +172,7 @@ async def _handle_daily_limit(
         f'<b>Пользователь:</b> <a href="tg://user?id={telegram_id}">{user_name}</a>{username_str} '
         f'(ID: <code>{telegram_id}</code>)\n'
         f'<b>Сообщений сегодня:</b> {used_today + 1} / {limit}\n'
-        f'<b>Вопрос:</b> {question or "[изображение]"}'
+        f'<b>Вопрос:</b> {escape(question or "[изображение]")}'
     )
     await _notify_admins(bot, notify_text, exclude_telegram_id=telegram_id)
     logger.info('Daily AI support limit reached', telegram_id=telegram_id, used=used_today, limit=limit)
@@ -229,23 +186,21 @@ async def handle_message(message: Message) -> None:
         logger.info('Duplicate update skipped', telegram_id=telegram_id)
         return
 
+    await settings_store.load()
+
     question = (message.text or message.caption or '').strip()
     image_url: str | None = None
 
     if message.photo and settings_store.get_bool('VISION_ENABLED'):
         image_url = await _download_image_data_url(bot, message.photo[-1].file_id)
 
+    if message.photo and not settings_store.get_bool('VISION_ENABLED') and not question:
+        await message.answer('Анализ изображений сейчас отключён. Опишите вопрос текстом.')
+        return
+
     if not question and not image_url:
         await message.answer('Пожалуйста, опишите вопрос текстом или пришлите скриншот.')
         return
-
-    # Fast-path: smalltalk ("Как дела?", "Привет", etc.) — respond locally,
-    # never call OpenAI so the LLM can't hallucinate VPN instructions.
-    if _is_smalltalk(question) and not image_url:
-        await message.answer(get_smalltalk_reply(question))
-        return
-
-    await settings_store.load()
 
     if _throttle_hit(telegram_id):
         if telegram_id not in _throttle_warned:
@@ -265,7 +220,8 @@ async def handle_message(message: Message) -> None:
     try:
         async with typing_action(bot, message.chat.id):
             async with AsyncSessionLocal() as db:
-                result = await support_agent.generate_answer(db, telegram_id, question, image_url=image_url)
+                options = {'media_file_id': message.photo[-1].file_id} if message.photo else {}
+                result = await support_agent.generate_answer(db, telegram_id, question, image_url=image_url, **options)
     except OpenAIError as error:
         logger.error('Generation failed', error=str(error), telegram_id=telegram_id)
         await message.answer('⚠️ Не удалось получить ответ. Попробуйте позже.')
@@ -292,12 +248,12 @@ async def handle_message(message: Message) -> None:
             f'<b>Пользователь:</b> <a href="tg://user?id={telegram_id}">{user_name}</a>{username_str} '
             f'(ID: <code>{telegram_id}</code>)\n'
             f'<b>Причина:</b> {reason}\n'
-            f'<b>Вопрос:</b> {question or "[изображение]"}\n\n'
+            f'<b>Вопрос:</b> {escape(question or "[изображение]")}\n\n'
             f'<b>Ответ, отправленный пользователю:</b>\n{answer}'
         )
         if result.get('support_context'):
             notify_text += '\n\n' + escape(result['support_context'])
-        await _notify_admins(bot, notify_text, exclude_telegram_id=telegram_id)
+        await _notify_admins(bot, notify_text, exclude_telegram_id=telegram_id, photo=result.get('support_photo'))
 
 
 def build_dispatcher() -> Dispatcher:

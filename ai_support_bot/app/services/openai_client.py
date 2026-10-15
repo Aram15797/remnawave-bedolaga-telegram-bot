@@ -41,7 +41,7 @@ class OpenAIClient:
                                 continue
                             raise OpenAIError(message)
                         return body
-            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            except (TimeoutError, aiohttp.ClientError) as error:
                 last_error = error
                 await asyncio.sleep(1.5 * (attempt + 1))
         raise OpenAIError(str(last_error) if last_error else 'Unknown OpenAI error')
@@ -101,6 +101,8 @@ class OpenAIClient:
             'tokens_prompt': usage.get('prompt_tokens'),
             'tokens_completion': usage.get('completion_tokens'),
             'tokens_cached': cached_tokens,
+            'finish_reason': choices[0].get('finish_reason'),
+            'reasoning_tokens': (usage.get('completion_tokens_details') or {}).get('reasoning_tokens', 0),
         }
 
 

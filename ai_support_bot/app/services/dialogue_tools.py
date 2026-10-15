@@ -1,6 +1,7 @@
 import json
 import re
 
+from ai_support_bot.app.services.response_rules import is_payment_missing
 from ai_support_bot.app.services.user_data import build_user_context
 
 
@@ -10,6 +11,11 @@ _ENUMS = {
     'purchase_channel': {'site', 'telegram', 'unknown'},
     'registration_method': {'email', 'telegram', 'other', 'unknown'},
 }
+
+
+def extract_reported_email(text: str) -> str | None:
+    emails = _EMAIL_RE.findall(text)
+    return emails[0] if len(emails) == 1 else None
 
 SUPPORT_TOOLS = [
     {
@@ -50,7 +56,7 @@ def support_state_block(state: dict) -> str:
     return (
         '<support_details>\nСведения со слов пользователя, не подтверждённые факты об аккаунте. '
         'Используй для текущей темы; не возвращайся к старому вопросу при смене темы.\n'
-        + json.dumps(state, ensure_ascii=False)
+        + json.dumps({key: value for key, value in state.items() if key != 'attachment_file_id'}, ensure_ascii=False)
         + '\n</support_details>'
     )
 
@@ -85,6 +91,12 @@ async def execute_support_tool(name: str, raw_arguments: str, telegram_id: int, 
         for field in ('receipt_reported', 'new_case'):
             if field in args and not isinstance(args[field], bool):
                 return {'error': f'Некорректное значение {field}.'}
+        if args.get('issue') == 'payment_missing' and state.get('issue') != 'payment_missing' and not is_payment_missing(evidence):
+            return {'error': 'Не сообщалось о незачисленном платеже. Пополнение без продления — отдельный вопрос, не выдумывай платёжный случай.'}
+        if args.get('purchase_channel') in {'site', 'telegram'} and args['purchase_channel'] != state.get('purchase_channel'):
+            pattern = r'сайт|кабинет|веб' if args['purchase_channel'] == 'site' else r'telegram|телеграм|бот\w*|\bтг\b'
+            if not re.search(pattern, evidence, re.IGNORECASE):
+                return {'error': 'Канал покупки не был сообщён. Уточни его, не выводи из места текущего диалога.'}
         if args.pop('new_case', False) or args.get('issue') in {'other', 'resolved'}:
             state.clear()
         if 'purchase_channel' in args and state.get('purchase_channel') != args['purchase_channel']:
@@ -94,7 +106,7 @@ async def execute_support_tool(name: str, raw_arguments: str, telegram_id: int, 
         state.update(args)
         if state.get('email') == '':
             state.pop('email', None)
-        output = {'saved': True, 'reported_details': dict(state)}
+        output = {'saved': True, 'reported_details': {key: value for key, value in state.items() if key != 'attachment_file_id'}}
         if changed and args.keys() & {'purchase_channel', 'registration_method', 'email'}:
             output['refresh'] = await execute_support_tool('refresh_account_data', '{}', telegram_id, state, evidence)
         return output
@@ -104,8 +116,9 @@ async def execute_support_tool(name: str, raw_arguments: str, telegram_id: int, 
         email = args.get('email')
         if email is not None and not _valid_email(email, evidence, state):
             return {'error': 'Email должен быть явно сообщён пользователем.'}
-        if not email and state.get('purchase_channel') == 'site':
+        if not email:
             email = state.get('email')
+        if not email and state.get('purchase_channel') == 'site':
             if state.get('registration_method') != 'telegram' and not email:
                 return {'account_data': 'Аккаунт покупки на сайте пока не определён. Уточни способ регистрации, а при входе через почту — email. Данные Telegram нельзя считать данными этого аккаунта.'}
         context = await build_user_context(telegram_id, email=email) if email else await build_user_context(telegram_id)
