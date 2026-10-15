@@ -52,7 +52,7 @@ async def test_parent_links_are_consistent(tree):
     [
         ('где вывести реферальный бонус', 'referral_withdrawal'),
         ('как пополнить баланс', 'balance_topup'),
-        ('где посмотреть мои тикеты', 'support'),
+        ('где посмотреть мои тикеты', 'web_tickets'),
         ('как сбросить трафик', 'subscription_traffic'),
         ('где сменить язык интерфейса', 'info_language'),
         ('как докупить гб трафика', 'subscription_traffic'),
@@ -139,16 +139,45 @@ async def test_lookup_falls_back_to_overview_for_unknown_topic():
 @pytest.mark.asyncio
 async def test_prompt_block_is_truncated_to_limit():
     registry.reset()
-    block = await build_prompt_block('подписка', language='ru', limit=3, max_chars=200)
+    block = await build_prompt_block('подписка', language='ru', limit=3, max_chars=500)
 
     assert block
-    assert len(block) < 400
+    assert len(block) < 700
 
 
 @pytest.mark.asyncio
 async def test_prompt_block_is_empty_for_smalltalk():
     registry.reset()
     assert await build_prompt_block('спасибо', language='ru') == ''
+
+
+@pytest.mark.asyncio
+async def test_prompt_budget_keeps_complete_paths_for_both_surfaces():
+    registry.reset()
+    block = await build_prompt_block('как продлить подписку', language='ru', max_chars=500)
+
+    assert 'Бот:' in block
+    assert 'Кабинет:' in block
+    assert block.count('Бот:') == block.count('Кабинет:')
+    assert 'https://web.slig.app' in block
+    assert ':subscriptionId' not in block
+    web_lines = [line for line in block.splitlines() if line.strip().startswith('Кабинет:')]
+    assert all('Стартовый экран' not in line for line in web_lines)
+
+
+@pytest.mark.asyncio
+async def test_web_labels_do_not_inherit_custom_bot_menu(tree):
+    from ai_support_bot.app.navigation.builder import _apply_menu_layout
+
+    _apply_menu_layout(
+        tree.index,
+        '{"buttons":{"subscription":{"action":"menu_subscription","text":"Мои подключения"}}}',
+        'ru',
+    )
+    rendered = render_node(tree, tree.get('subscription'), depth=0)
+
+    assert 'Бот:' in rendered and 'Мои подключения' in rendered
+    assert 'Кабинет: Подписка' in rendered
 
 
 @pytest.mark.asyncio

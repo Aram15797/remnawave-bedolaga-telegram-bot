@@ -83,6 +83,7 @@ async def test_escalation_notice_goes_to_user_and_service_text_to_admins(monkeyp
         'hedged': True,
         'knowledge_used': 0,
         'model': 'gpt-4o-mini',
+        'support_context': 'Указанный email: buyer@example.com\nТекст: <private>',
     })
     monkeypatch.setattr(bot_mod.settings, 'ADMIN_IDS', '999,1000')
 
@@ -92,6 +93,8 @@ async def test_escalation_notice_goes_to_user_and_service_text_to_admins(monkeyp
     assert message.answers == ['Уточняю этот вопрос у оператора, подождите, пожалуйста.']
     for _, text in message.bot.sent:
         assert 'Внимание: Обращение требует внимания оператора' in text
+        assert 'buyer@example.com' in text
+        assert '&lt;private&gt;' in text
     assert {chat_id for chat_id, _ in message.bot.sent} == {999, 1000}
 
     for text in message.answers:

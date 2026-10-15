@@ -25,6 +25,7 @@ _initialized = False
 
 _CONVERSATION_COLUMNS = (
     ('summary', 'TEXT'),
+    ('support_state', 'JSON'),
     ('summarized_message_count', 'INTEGER NOT NULL DEFAULT 0'),
     ('summarized_up_to_id', 'INTEGER NOT NULL DEFAULT 0'),
     ('user_turns_since_summary', 'INTEGER NOT NULL DEFAULT 0'),

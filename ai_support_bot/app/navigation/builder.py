@@ -12,6 +12,7 @@ from ai_support_bot.app.db.database import get_main_session
 from ai_support_bot.app.navigation.blueprint import BLUEPRINT, CALLBACK_HINTS
 from ai_support_bot.app.navigation.locales import load_locale, locales_available
 from ai_support_bot.app.navigation.schema import NavNode, NavTree
+from ai_support_bot.app.navigation.web import apply_web_navigation
 
 
 logger = structlog.get_logger(__name__)
@@ -280,7 +281,7 @@ async def _load_db_layer(tree_index: dict[str, NavNode], language: str) -> list[
                         bot_label=label,
                         bot_callback=f'info_page:{entry.get("id")}:1',
                         web_label=label,
-                        web_path=f'/info-pages/{entry.get("slug")}' if entry.get('slug') else '/info',
+                        web_path=f'/info/{entry.get("slug")}' if entry.get('slug') else '/info',
                         hint='Информационная страница из раздела «Информация».',
                         keywords=(label.lower(),),
                         source='info_pages',
@@ -345,6 +346,7 @@ async def build_navigation_tree(language: str = 'ru') -> NavTree:
     if locale and locales_available():
         sources.append('locales')
 
+    sources.extend(apply_web_navigation(index, code))
     sources.extend(await _load_db_layer(index, code))
 
     tree = NavTree(

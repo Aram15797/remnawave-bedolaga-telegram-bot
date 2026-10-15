@@ -50,7 +50,7 @@ async def test_rolling_summary_triggers_every_n_turns(monkeypatch, tmp_path):
 
     summary_calls = {'n': 0}
 
-    async def fake_chat_completion(messages, model, max_tokens, temperature):
+    async def fake_chat_completion(messages, model, max_tokens, temperature, **kwargs):
         if 'сжимаешь диалог' in messages[0]['content']:
             summary_calls['n'] += 1
             return {'content': '• Проблема: тест', 'model': model, 'tokens_prompt': 1,
@@ -95,3 +95,4 @@ async def test_rolling_summary_triggers_every_n_turns(monkeypatch, tmp_path):
         conv = await crud.get_or_create_conversation(db, tid)
         assert conv.summary
         assert conv.user_turns_since_summary == 0
+    await database_mod.engine.dispose()

@@ -58,7 +58,8 @@ class OpenAIClient:
         return [item['embedding'] for item in data]
 
     async def chat_completion(
-        self, messages: list[dict[str, Any]], model: str, max_tokens: int, temperature: float
+        self, messages: list[dict[str, Any]], model: str, max_tokens: int, temperature: float,
+        tools: list[dict] | None = None, tool_choice: str = 'auto',
     ) -> dict[str, Any]:
         payload = {
             'model': model,
@@ -66,6 +67,10 @@ class OpenAIClient:
             'max_completion_tokens': max_tokens,
             'temperature': temperature,
         }
+        if tools:
+            payload['tools'] = tools
+            payload['tool_choice'] = tool_choice
+            payload['parallel_tool_calls'] = False
         try:
             body = await self._post('/chat/completions', payload)
         except OpenAIError as error:
@@ -88,8 +93,10 @@ class OpenAIClient:
         prompt_details = usage.get('prompt_tokens_details') or {}
         cached_tokens = prompt_details.get('cached_tokens', 0)
 
+        message = choices[0].get('message') or {}
         return {
-            'content': choices[0].get('message', {}).get('content', '').strip(),
+            'content': (message.get('content') or '').strip(),
+            'tool_calls': message.get('tool_calls') or [],
             'model': body.get('model', model),
             'tokens_prompt': usage.get('prompt_tokens'),
             'tokens_completion': usage.get('completion_tokens'),

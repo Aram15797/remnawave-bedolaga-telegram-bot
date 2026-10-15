@@ -12,10 +12,13 @@ class NavNode:
     bot_callback: str | None = None
     web_label: str | None = None
     web_path: str | None = None
+    web_link: str | None = None
+    web_steps: tuple[str, ...] = ()
+    web_hint: str = ''
     hint: str = ''
     keywords: tuple[str, ...] = ()
     source: str = 'blueprint'
-    children: list['NavNode'] = field(default_factory=list)
+    children: list[NavNode] = field(default_factory=list)
 
     @property
     def available_in_bot(self) -> bool:
@@ -26,7 +29,7 @@ class NavNode:
         return bool(self.web_path)
 
     def searchable_text(self) -> str:
-        parts = [self.title, self.bot_label or '', self.web_label or '', self.hint, ' '.join(self.keywords)]
+        parts = [self.title, self.bot_label or '', self.web_label or '', self.hint, self.web_hint, ' '.join(self.keywords)]
         return ' '.join(part for part in parts if part)
 
 

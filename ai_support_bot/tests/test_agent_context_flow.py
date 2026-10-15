@@ -1,4 +1,9 @@
+import asyncio
+import json
 import os
+from unittest.mock import AsyncMock
+
+from sqlalchemy import text
 
 import pytest
 import pytest_asyncio
@@ -38,16 +43,19 @@ async def flow(monkeypatch, tmp_path):
 
     captured: dict = {'queries': [], 'prompts': [], 'reply': 'Готово.'}
 
-    async def fake_chat_completion(messages, model, max_tokens, temperature):
+    async def fake_chat_completion(messages, model, max_tokens, temperature, **kwargs):
         captured['prompts'].append(messages[0]['content'])
         captured['messages'] = messages
-        return {
+        result = {
             'content': captured['reply'],
             'model': model,
             'tokens_prompt': 1,
             'tokens_completion': 1,
             'tokens_cached': 0,
         }
+        if captured.get('responses'):
+            result.update(captured['responses'].pop(0))
+        return result
 
     async def fake_retrieve(db, query):
         captured['queries'].append(query)
@@ -59,6 +67,7 @@ async def flow(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_mod.openai_client, 'chat_completion', fake_chat_completion)
     monkeypatch.setattr(agent_mod.rag_service, 'retrieve', fake_retrieve)
     monkeypatch.setattr(agent_mod, 'build_user_context', fake_user_context)
+    monkeypatch.setattr(agent_mod, '_response_cache', agent_mod._ResponseCache())
 
     monkeypatch.setattr(settings_store, 'AsyncSessionLocal', database_mod.AsyncSessionLocal)
     monkeypatch.setattr(settings_store, 'settings', config_mod.settings)
@@ -69,7 +78,10 @@ async def flow(monkeypatch, tmp_path):
     await settings_store.load()
     monkeypatch.setitem(settings_store._cache, 'SUMMARY_ENABLED', '0')
 
-    yield captured, agent_mod, database_mod.AsyncSessionLocal
+    try:
+        yield captured, agent_mod, database_mod.AsyncSessionLocal
+    finally:
+        await database_mod.engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -145,7 +157,8 @@ async def test_hedged_factual_answer_is_replaced_with_escalation_notice(flow):
     assert result['escalate'] is True
     assert result['hedged'] is True
     assert 'Скорее всего' not in result['answer']
-    assert 'оператор' in result['answer'].lower()
+    assert 'подождите' in result['answer'].lower()
+    assert 'оператор' not in result['answer'].lower()
 
 
 @pytest.mark.asyncio
@@ -188,3 +201,145 @@ async def test_followup_answer_is_not_served_from_cache(flow):
         await agent_mod.support_agent.generate_answer(db, 4242, question)
 
     assert len(captured['prompts']) == calls_after_first + 1
+
+
+@pytest.mark.asyncio
+async def test_first_turn_cache_changes_with_personal_data(flow, monkeypatch):
+    captured, agent_mod, Session = flow
+
+    async def no_history(*args):
+        return []
+
+    monkeypatch.setattr(agent_mod.crud, 'get_conversation_context', no_history)
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'какой у меня баланс')
+
+    async def changed_context(telegram_id):
+        return 'Баланс: 250.00 ₽'
+
+    monkeypatch.setattr(agent_mod, 'build_user_context', changed_context)
+    captured['reply'] = 'Баланс: 250.00 ₽'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'какой у меня баланс')
+
+    assert len(captured['prompts']) == 2
+    assert result['answer'] == 'Баланс: 250.00 ₽'
+
+
+@pytest.mark.asyncio
+async def test_saved_legacy_prompt_still_receives_current_service_policy(flow):
+    captured, agent_mod, Session = flow
+    from ai_support_bot.app.services import settings_store
+
+    await settings_store.set_value('SYSTEM_PROMPT', 'Старые инструкции: отвечай только про Telegram.')
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'как подключить на сайте')
+
+    prompt = captured['prompts'][-1]
+    assert prompt.index('Актуальные правила SligVPN') > prompt.index('Старые инструкции')
+    assert 'https://web.slig.app' in prompt
+    assert '<user_data>' in prompt
+
+
+def _tool_reply(name, arguments, call_id='call_1'):
+    return {'content': '', 'tool_calls': [{
+        'id': call_id, 'type': 'function',
+        'function': {'name': name, 'arguments': json.dumps(arguments)},
+    }]}
+
+
+@pytest.mark.asyncio
+async def test_payment_intake_persists_and_refreshes_on_short_answers(flow, monkeypatch):
+    captured, agent_mod, Session = flow
+    from ai_support_bot.app.services import dialogue_tools, settings_store
+
+    refresh = AsyncMock(return_value='Email аккаунта: buyer@example.com\nБаланс: 250.00 ₽')
+    initial = AsyncMock(return_value=USER_CONTEXT)
+    monkeypatch.setattr(dialogue_tools, 'build_user_context', refresh)
+    monkeypatch.setattr(agent_mod, 'build_user_context', initial)
+    await settings_store.set_value('CONTEXT_MESSAGES', '1')
+    captured['responses'] = [
+        _tool_reply('save_support_details', {'issue': 'payment_missing', 'purchase_channel': 'site', 'receipt_reported': True}),
+        {'content': 'На сайте регистрировались через почту?'},
+        _tool_reply('save_support_details', {'registration_method': 'email'}),
+        {'content': 'Напишите email аккаунта.'},
+        _tool_reply('save_support_details', {'email': 'buyer@example.com'}),
+        {'content': 'Передаю данные для проверки.\n[[ESCALATE]]'},
+    ]
+    for question in ('Не пришли деньги, покупал на сайте, выписку уже прислал', 'да', 'buyer@example.com'):
+        async with Session() as db:
+            result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+
+    assert initial.await_count == 3
+    refresh.assert_awaited_once_with(4242, email='buyer@example.com')
+    assert result['escalate']
+    assert 'buyer@example.com' in result['support_context']
+    assert 'Баланс: 250.00 ₽' in captured['messages'][-1]['content']
+    assert captured['messages'][-1]['role'] == 'tool'
+    async with Session() as db:
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert conversation.support_state['purchase_channel'] == 'site'
+        assert conversation.support_state['registration_method'] == 'email'
+        assert conversation.support_state['receipt_reported'] is True
+        assert conversation.support_state['email'] == 'buyer@example.com'
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_is_bounded_and_usage_is_summed(flow):
+    captured, agent_mod, Session = flow
+    captured['responses'] = [
+        _tool_reply('unknown_tool', {}), _tool_reply('unknown_tool', {}),
+        _tool_reply('unknown_tool', {}),
+    ]
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'проверьте мой платёж')
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        history = await agent_mod.crud.get_conversation_context(db, conversation.id, 2)
+        assert history[-1].tokens_prompt == 3
+        assert history[-1].tokens_completion == 3
+    assert result['escalate']
+    assert len(captured['prompts']) == 3
+
+
+@pytest.mark.asyncio
+async def test_existing_database_gets_support_state_column(flow):
+    _, agent_mod, Session = flow
+    from ai_support_bot.app.db import database
+
+    async with database.engine.begin() as connection:
+        await connection.execute(text('ALTER TABLE conversations DROP COLUMN support_state'))
+    await database.init_db()
+    async with Session() as db:
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        conversation.support_state = {'issue': 'payment_missing'}
+        await db.commit()
+    async with Session() as db:
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert conversation.support_state == {'issue': 'payment_missing'}
+
+
+@pytest.mark.asyncio
+async def test_same_user_turns_are_serialized(monkeypatch):
+    from ai_support_bot.app.services.agent import SupportAgent
+
+    agent = SupportAgent()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    order = []
+
+    async def generate(db, telegram_id, question, image_url):
+        order.append(question)
+        if question == 'first':
+            entered.set()
+            await release.wait()
+        return {'answer': question}
+
+    monkeypatch.setattr(agent, '_generate_answer', generate)
+    first = asyncio.create_task(agent.generate_answer(None, 42, 'first'))
+    await asyncio.wait_for(entered.wait(), 1)
+    second = asyncio.create_task(agent.generate_answer(None, 42, 'second'))
+    await asyncio.sleep(0)
+    assert order == ['first']
+    release.set()
+    await asyncio.gather(first, second)
+    assert order == ['first', 'second']

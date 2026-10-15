@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import structlog
 
 from ai_support_bot.app.navigation import registry
-from ai_support_bot.app.navigation.renderer import node_to_dict, render_matches, render_overview
+from ai_support_bot.app.navigation.renderer import node_to_dict, render_matches, render_node, render_overview
 from ai_support_bot.app.navigation.schema import NavTree
 from ai_support_bot.app.navigation.search import search
 
@@ -13,6 +14,22 @@ from ai_support_bot.app.navigation.search import search
 logger = structlog.get_logger(__name__)
 
 TOOL_NAME = 'navigation_lookup'
+
+
+def resolve_surface(query: str) -> str | None:
+    for line in reversed(query.splitlines()):
+        web = bool(re.search(r'\b(?:сайт\w*|кабинет\w*|веб\w*|web|website)\b', line, re.IGNORECASE))
+        bot = bool(re.search(r'\b(?:бот\w*|телеграм\w*|telegram|tg|тг)\b', line, re.IGNORECASE))
+        if web or bot:
+            return 'web' if web and not bot else 'bot' if bot and not web else None
+    return None
+
+
+def _wants_overview(query: str) -> bool:
+    return bool(re.search(
+        r'структур\w*|навигаци\w*|(?:какие|основные|все|список)\s+(?:есть\s+)?раздел\w*|что есть (?:на сайте|в кабинете)',
+        query, re.IGNORECASE,
+    ))
 
 TOOL_SPEC: dict[str, Any] = {
     'type': 'function',
@@ -65,7 +82,13 @@ async def lookup(
     if tree is None:
         return {'found': False, 'text': '', 'nodes': [], 'language': language or registry.DEFAULT_LANGUAGE}
 
-    matches = search(tree, query or '', limit=max(1, min(limit, 5)))
+    surface = resolve_surface(query or '')
+    if surface and _wants_overview(query or ''):
+        return {
+            'found': True, 'overview': True, 'text': render_overview(tree, surface=surface),
+            'nodes': [], 'language': tree.language, 'tree_size': tree.size, 'sources': list(tree.sources),
+        }
+    matches = search(tree, query or '', limit=max(1, min(limit, 5)), surface=surface)
     nodes = [match.node for match in matches]
 
     blocks: list[str] = []
@@ -108,12 +131,36 @@ async def build_prompt_block(
     if not result.get('found'):
         return ''
 
-    body = result.get('text') or ''
+    if result.get('overview'):
+        body = result['text']
+        if max_chars > 0:
+            lines: list[str] = []
+            for line in body.splitlines():
+                if len('\n'.join([*lines, line])) > max_chars:
+                    break
+                lines.append(line)
+            body = '\n'.join(lines)
+        return 'Карта интерфейса:\n' + body
+
+    tree = await _resolve_tree(language, ttl_seconds)
+    if tree is None:
+        return ''
+    nodes = [tree.get(item['id']) for item in result['nodes']]
+    nodes = [node for node in nodes if node is not None]
+    blocks: list[str] = []
+    for node in nodes:
+        block = render_node(tree, node, depth=depth, max_children=max_children)
+        if max_chars > 0 and len('\n\n'.join([*blocks, block])) > max_chars:
+            compact = render_node(tree, node, depth=0)
+            block = '\n'.join(
+                line for line in compact.splitlines()
+                if line.strip().startswith(('Бот:', 'Кабинет:', 'Особенности сайта:'))
+            )
+        if max_chars <= 0 or len('\n\n'.join([*blocks, block])) <= max_chars:
+            blocks.append(block)
+    body = '\n\n'.join(blocks)
     if not body:
         return ''
-
-    if len(body) > max_chars > 0:
-        body = body[:max_chars].rstrip() + '\n  …'
 
     header = (
         'Карта интерфейса по теме вопроса (актуальные названия кнопок; используй эти пути дословно, '

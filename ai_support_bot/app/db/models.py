@@ -63,6 +63,7 @@ class Conversation(Base):
     telegram_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     escalated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    support_state: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     summarized_message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     summarized_up_to_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     user_turns_since_summary: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

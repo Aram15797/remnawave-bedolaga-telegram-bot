@@ -143,6 +143,7 @@ def _node_score(node: NavNode, folded_query: str, query_stems: set[str]) -> floa
     score += _field_score(query_stems, node.web_label or '', _LABEL_WEIGHT * 0.6)
     score += _field_score(query_stems, ' '.join(node.keywords), _KEYWORD_WEIGHT)
     score += _field_score(query_stems, node.hint, _HINT_WEIGHT)
+    score += _field_score(query_stems, node.web_hint, _HINT_WEIGHT)
 
     for candidate in (node.title, node.bot_label or '', node.web_label or '', *node.keywords):
         folded = _fold(candidate)
@@ -152,7 +153,7 @@ def _node_score(node: NavNode, folded_query: str, query_stems: set[str]) -> floa
     return score
 
 
-def search(tree: NavTree, query: str, limit: int = 3) -> list[NavMatch]:
+def search(tree: NavTree, query: str, limit: int = 3, surface: str | None = None) -> list[NavMatch]:
     query_stems = _stems(tokenize(query))
     if not query_stems:
         return []
@@ -160,6 +161,10 @@ def search(tree: NavTree, query: str, limit: int = 3) -> list[NavMatch]:
     folded_query = _fold(query)
     direct: dict[str, float] = {}
     for node in tree.iter_nodes():
+        if surface == 'web' and not node.available_in_web:
+            continue
+        if surface == 'bot' and not node.available_in_bot:
+            continue
         value = _node_score(node, folded_query, query_stems)
         if value > 0:
             direct[node.id] = value

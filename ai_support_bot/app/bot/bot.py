@@ -5,6 +5,7 @@ import random
 import re
 import time
 from contextlib import asynccontextmanager
+from html import escape
 
 import structlog
 from aiogram import Bot, Dispatcher, F
@@ -294,6 +295,8 @@ async def handle_message(message: Message) -> None:
             f'<b>Вопрос:</b> {question or "[изображение]"}\n\n'
             f'<b>Ответ, отправленный пользователю:</b>\n{answer}'
         )
+        if result.get('support_context'):
+            notify_text += '\n\n' + escape(result['support_context'])
         await _notify_admins(bot, notify_text, exclude_telegram_id=telegram_id)
 
 

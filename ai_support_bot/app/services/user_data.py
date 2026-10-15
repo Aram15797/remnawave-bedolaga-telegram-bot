@@ -73,7 +73,7 @@ def _fmt_date(value) -> str:
     return dt.strftime('%d.%m.%Y') if dt else str(value)
 
 
-async def build_user_context(telegram_id: int) -> str:
+async def build_user_context(telegram_id: int, email: str | None = None) -> str:
     lines: list[str] = [f'Telegram ID: {telegram_id}']
 
     session = await get_main_session()
@@ -82,14 +82,16 @@ async def build_user_context(telegram_id: int) -> str:
         try:
             result = await session.execute(
                 text(
-                    'SELECT id, username, first_name, last_name, language, balance_kopeks, '
+                    'SELECT id, username, first_name, last_name, language, balance_kopeks, email, auth_type, '
                     'has_had_paid_subscription, has_made_first_topup, used_promocodes, '
                     'referral_code, referred_by_id, promo_group_id, created_at, '
                     'restriction_topup, restriction_subscription, restriction_reason, '
                     'remnawave_uuid '
-                    'FROM users WHERE telegram_id = :tid LIMIT 1'
+                    'FROM users WHERE telegram_id = :tid '
+                    + ('AND lower(email) = lower(:email) ' if email else '')
+                    + 'LIMIT 1'
                 ),
-                {'tid': telegram_id},
+                {'tid': telegram_id, **({'email': email} if email else {})},
             )
             user_row = result.mappings().first()
 
@@ -104,6 +106,10 @@ async def build_user_context(telegram_id: int) -> str:
                 lines.append(f'Язык: {user_row.get("language") or "ru"}')
                 lines.append(f'Баланс: {_format_price(user_row.get("balance_kopeks"))}')
                 lines.append(f'Регистрация: {_fmt_date(user_row.get("created_at"))}')
+                if user_row.get('auth_type'):
+                    lines.append(f'Способ регистрации: {user_row["auth_type"]}')
+                if user_row.get('email'):
+                    lines.append(f'Email аккаунта: {user_row["email"]}')
 
                 status_flags = []
                 if user_row.get('has_had_paid_subscription'):
@@ -176,12 +182,14 @@ async def build_user_context(telegram_id: int) -> str:
                             left_str = f' (осталось {left} дн.)' if left >= 0 else f' (истекла {abs(left)} дн. назад)'
                         sub_url = sub.get('subscription_url')
                         url_str = f', ссылка={sub_url}' if sub_url else ''
+                        device_limit = sub.get('device_limit')
+                        devices = 'без ограничений' if device_limit == 0 else device_limit
                         lines.append(
                             f'  • подписка №{index} (id={sub.get("id")}), '
                             f'статус={sub.get("status")}, '
                             f'триал={"да" if sub.get("is_trial") else "нет"}, '
                             f'до {end_str}{left_str}, трафик={traffic}, '
-                            f'устройств={sub.get("device_limit")}, '
+                            f'устройств={devices}, '
                             f'автоплатеж={"вкл" if sub.get("autopay_enabled") else "выкл"}{url_str}'
                         )
                 else:
@@ -189,23 +197,42 @@ async def build_user_context(telegram_id: int) -> str:
 
                 tx = await session.execute(
                     text(
-                        'SELECT type, amount_kopeks, description, created_at '
+                        'SELECT id, type, amount_kopeks, description, created_at, external_id, is_completed '
                         'FROM transactions WHERE user_id = :uid ORDER BY created_at DESC LIMIT 5'
                     ),
                     {'uid': user_row['id']},
                 )
                 tx_rows = tx.mappings().all()
                 if tx_rows:
-                    lines.append('Последние операции:')
+                    lines.append('Последние операции (до 5; отсутствие записи не доказывает отсутствие платежа):')
                     for row in tx_rows:
-                        created_str = _fmt_date(row.get('created_at'))
+                        created = _as_datetime(row.get('created_at'))
+                        if created is not None:
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=timezone.utc)
+                            created_str = created.astimezone(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')
+                        else:
+                            created_str = _fmt_date(row.get('created_at'))
                         description = (row.get('description') or '')[:60]
+                        completed = row.get('is_completed')
+                        status = 'завершена' if completed is True else 'не завершена' if completed is False else 'неизвестен'
+                        external_id = str(row.get('external_id') or '')[:96]
                         lines.append(
                             f'  • {created_str} {row.get("type")} '
-                            f'{_format_price(row.get("amount_kopeks"))} — {description}'
+                            f'{_format_price(row.get("amount_kopeks"))} — {description}; '
+                            f'статус={status}, id={row.get("id")}, идентификатор={external_id or "нет"}'
                         )
             else:
-                lines.append('Пользователь не найден в основной базе (возможно, ещё не запускал основного бота).')
+                if email:
+                    return (
+                        'Нет подтверждённой связи указанного email с текущим Telegram-пользователем. '
+                        'Это не подтверждает и не опровергает существование аккаунта. '
+                        'Не раскрывай его баланс, подписки и платежи. Передай указанный email команде '
+                        'как сообщение пользователя; для доступа к аккаунту нужна авторизация на сайте '
+                        'и привязка Telegram: https://web.slig.app/profile/accounts.'
+                    )
+                lines.append('Пользователь не найден по Telegram ID; возможен отдельный аккаунт сайта. '
+                             'Не делай выводов о его существовании, подписке или платежах.')
         except Exception as error:
             lines.append(
                 'ВНИМАНИЕ: данные пользователя из основной базы недоступны. '
@@ -219,6 +246,9 @@ async def build_user_context(telegram_id: int) -> str:
             )
         finally:
             await session.close()
+
+    if email and user_row is None:
+        return 'Данные указанного email-аккаунта не подтверждены или временно недоступны. Не раскрывай его данные; передай обращение команде.'
 
     if settings_store.get_bool('INCLUDE_REMNAWAVE_DATA') and settings.remnawave_enabled:
         remna = await get_remnawave_stats(telegram_id, user_row.get('remnawave_uuid') if user_row else None)

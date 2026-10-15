@@ -1,5 +1,8 @@
+import asyncio
+import json
 import re
 import time
+from weakref import WeakValueDictionary
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,11 +11,18 @@ from ai_support_bot.app.core.config import ESCALATION_MARKER
 from ai_support_bot.app.db import crud
 from ai_support_bot.app.navigation import tool as navigation_tool
 from ai_support_bot.app.services import settings_store
+from ai_support_bot.app.services.dialogue_tools import (
+    SUPPORT_TOOLS,
+    execute_support_tool,
+    support_details_for_admin,
+    support_state_block,
+)
 from ai_support_bot.app.services.knowledge_parser import compute_content_hash
 from ai_support_bot.app.services.openai_client import openai_client
 from ai_support_bot.app.services.rag_service import rag_service
 from ai_support_bot.app.services.service_catalog import build_service_catalog, build_user_offers
 from ai_support_bot.app.services.summary_service import summary_service
+from ai_support_bot.app.services.support_policy import SUPPORT_POLICY
 from ai_support_bot.app.services.user_data import build_user_context, resolve_user_language
 
 
@@ -168,6 +178,50 @@ def looks_hedged(answer_text: str, question: str, knowledge_used: int) -> bool:
 
 
 class SupportAgent:
+    def __init__(self) -> None:
+        self._turn_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+
+    async def _complete_with_tools(
+        self, messages: list[dict], model: str, max_tokens: int, temperature: float,
+        telegram_id: int, state: dict, evidence: str, enable_tools: bool,
+    ) -> dict:
+        usage = {'tokens_prompt': 0, 'tokens_completion': 0}
+        tools_used = False
+        executed = 0
+        for round_number in range(3):
+            options = {'tools': SUPPORT_TOOLS, 'tool_choice': 'none' if round_number == 2 else 'auto'} if enable_tools else {}
+            result = await openai_client.chat_completion(
+                messages=messages, model=model, max_tokens=max_tokens, temperature=temperature, **options,
+            )
+            for key in usage:
+                usage[key] += result.get(key) or 0
+            calls = result.get('tool_calls') or []
+            if not calls:
+                if not result.get('content'):
+                    result['content'] = f'Уточняю этот вопрос, подождите, пожалуйста.\n{_ESCALATION_MARKER}'
+                return {**result, **usage, 'tools_used': tools_used}
+            if not enable_tools or round_number == 2:
+                break
+            tools_used = True
+            messages.append({'role': 'assistant', 'content': result.get('content') or None, 'tool_calls': calls})
+            for call in calls:
+                function = call.get('function') or {}
+                if executed >= 4:
+                    output = {'error': 'Лимит вызовов исчерпан. Ответь по собранным данным или передай обращение.'}
+                else:
+                    output = await execute_support_tool(
+                        function.get('name', ''), function.get('arguments', ''), telegram_id, state, evidence,
+                    )
+                    executed += 1
+                messages.append({
+                    'role': 'tool', 'tool_call_id': call['id'],
+                    'content': json.dumps(output, ensure_ascii=False),
+                })
+        return {
+            'content': f'Уточняю этот вопрос, подождите, пожалуйста.\n{_ESCALATION_MARKER}',
+            'model': model, **usage, 'tools_used': tools_used,
+        }
+
     def _build_system_prompt(
         self,
         knowledge: list[dict],
@@ -176,7 +230,10 @@ class SupportAgent:
         navigation: str = '',
         catalog: str = '',
     ) -> str:
-        blocks = [settings_store.get('SYSTEM_PROMPT')]
+        configured_prompt = settings_store.get('SYSTEM_PROMPT')
+        blocks = [configured_prompt]
+        if SUPPORT_POLICY not in configured_prompt:
+            blocks.append(SUPPORT_POLICY)
 
         if summary:
             blocks.append(
@@ -191,28 +248,23 @@ class SupportAgent:
 
         if knowledge:
             examples = [
-                f'Пример {idx}:\n{item["content"]}'
+                f'Пример {idx}:\n{item["content"][:1200]}'
                 for idx, item in enumerate(knowledge, start=1)
             ]
             blocks.append(
-                'Примеры прошлых обращений и ответов поддержки (образец тона и решений, НЕ факты о клиенте):\n'
+                '<past_tickets>\nПримеры прошлых обращений и ответов поддержки (общие решения, НЕ факты о клиенте):\n'
                 + '\n\n'.join(examples)
+                + '\n</past_tickets>'
             )
         else:
             blocks.append(
-                'База знаний не дала релевантных примеров по этому вопросу. Опирайся только на «Данные текущего '
-                'пользователя» и общеизвестные шаги. Если фактов не хватает — не гадай, эскалируй.'
+                'База знаний не дала релевантных примеров. Используй актуальные правила сервиса, карту интерфейса, '
+                'каталог и данные пользователя. Первичную диагностику VPN проводи по правилам сервиса. '
+                'Если точного ответа всё равно нет — не гадай, эскалируй.'
             )
 
         if user_context:
-            blocks.append('Данные текущего пользователя:\n' + user_context)
-
-        blocks.append(
-            'ПРАВИЛО ЭСКАЛАЦИИ: Если вопрос требует ручного вмешательства оператора (возврат денег, изменение '
-            'подписки, жалоба, сложная техническая проблема, которую не решить советом) ИЛИ ты не знаешь точного '
-            f'ответа — добавь в самом конце сообщения маркер {_ESCALATION_MARKER}. Маркер ставится строго последним '
-            'символами ответа и нигде больше. Пользователю при этом напиши коротко, что вопрос уточняется.'
-        )
+            blocks.append('<user_data>\nДанные текущего пользователя:\n' + user_context + '\n</user_data>')
         return '\n\n'.join(blocks)
 
     async def _build_navigation_block(
@@ -270,6 +322,13 @@ class SupportAgent:
     async def generate_answer(
         self, db: AsyncSession, telegram_id: int, question: str, image_url: str | None = None
     ) -> dict:
+        lock = self._turn_locks.setdefault(telegram_id, asyncio.Lock())
+        async with lock:
+            return await self._generate_answer(db, telegram_id, question, image_url)
+
+    async def _generate_answer(
+        self, db: AsyncSession, telegram_id: int, question: str, image_url: str | None = None
+    ) -> dict:
         await settings_store.load()
 
         max_question_chars = settings_store.get_int('MAX_QUESTION_CHARS') or 1500
@@ -281,8 +340,11 @@ class SupportAgent:
 
         conversation = await crud.get_or_create_conversation(db, telegram_id)
         summary = conversation.summary
+        support_state = dict(conversation.support_state or {})
+        if support_state.get('issue') == 'payment_missing':
+            smalltalk = False
 
-        context_limit = settings_store.get_int('CONTEXT_MESSAGES') or 12
+        context_limit = settings_store.get_int('CONTEXT_MESSAGES') or 8
         history = await crud.get_conversation_context(db, conversation.id, context_limit)
 
         knowledge: list[dict] = []
@@ -302,6 +364,9 @@ class SupportAgent:
         system_prompt = self._build_system_prompt(
             knowledge, user_context, summary, navigation=navigation_block, catalog=catalog_block
         )
+        details = support_state_block(support_state)
+        if details:
+            system_prompt += '\n\n' + details
 
         messages: list[dict] = [{'role': 'system', 'content': system_prompt}]
         for item in history:
@@ -326,14 +391,15 @@ class SupportAgent:
             messages.append({'role': 'user', 'content': question})
 
         model = settings_store.get('MODEL')
-        max_tokens = settings_store.get_int('MAX_TOKENS') or 700
+        max_tokens = settings_store.get_int('MAX_TOKENS') or 600
         temperature = settings_store.get_float('TEMPERATURE')
 
         cache_key = None
         cached_answer = None
         cache_ttl = settings_store.get_int('RESPONSE_CACHE_TTL') or 900
         if not image_url and question.strip() and not smalltalk and not history:
-            cache_key = f'{telegram_id}:{compute_content_hash(question.strip().lower().encode("utf-8"))}'
+            cache_input = f'{model}:{max_tokens}:{temperature}:{system_prompt}:{question}'
+            cache_key = f'{telegram_id}:{compute_content_hash(cache_input.encode("utf-8"))}'
             cached_answer = _response_cache.get(cache_key, ttl=cache_ttl)
 
         tokens_prompt = None
@@ -343,14 +409,19 @@ class SupportAgent:
             model_used = model
         else:
             logger.info('Sending prompt to OpenAI', telegram_id=telegram_id, smalltalk=smalltalk, kb=len(knowledge))
-            result = await openai_client.chat_completion(
-                messages=messages, model=model, max_tokens=max_tokens, temperature=temperature
+            evidence = '\n'.join([item.content for item in history if item.role == 'user'] + [question])
+            evidence += '\n' + '\n'.join(
+                line for line in user_context.splitlines() if line.startswith('Email аккаунта:')
+            )
+            result = await self._complete_with_tools(
+                messages=messages, model=model, max_tokens=max_tokens, temperature=temperature,
+                telegram_id=telegram_id, state=support_state, evidence=evidence, enable_tools=not smalltalk,
             )
             answer_text = result['content']
             model_used = result['model']
             tokens_prompt = result['tokens_prompt']
             tokens_completion = result['tokens_completion']
-            if cache_key and answer_text:
+            if cache_key and answer_text and not result.get('tools_used'):
                 _response_cache.set(cache_key, answer_text)
 
         escalate = has_escalation_marker(answer_text)
@@ -362,10 +433,11 @@ class SupportAgent:
             if hedged:
                 escalate = True
                 notice = settings_store.get('ESCALATION_USER_NOTICE')
-                answer_text = notice or 'Уточняю этот вопрос у оператора, подождите, пожалуйста.'
+                answer_text = notice or 'Уточняю этот вопрос, подождите, пожалуйста.'
                 logger.info('Hedged answer replaced with escalation notice', telegram_id=telegram_id)
 
         answer_text = convert_markdown_to_html(answer_text)
+        conversation.support_state = support_state
 
         await crud.add_message(
             db,
@@ -405,6 +477,7 @@ class SupportAgent:
             'hedged': hedged,
             'knowledge_used': len(knowledge),
             'model': model_used,
+            'support_context': support_details_for_admin(support_state),
         }
 
 
