@@ -1,8 +1,7 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from ai_support_bot.app.db.models import Conversation, KnowledgeChunk, KnowledgeSource, Message
 
@@ -85,16 +84,36 @@ async def get_or_create_conversation(db: AsyncSession, telegram_id: int) -> Conv
     result = await db.execute(
         select(Conversation)
         .where(Conversation.telegram_id == telegram_id)
-        .order_by(Conversation.created_at.desc())
+        .order_by(Conversation.created_at.desc(), Conversation.id.desc())
         .limit(1)
     )
     conversation = result.scalar_one_or_none()
     if conversation:
         return conversation
+    return await start_conversation(db, telegram_id)
+
+
+async def start_conversation(db: AsyncSession, telegram_id: int) -> Conversation:
     conversation = Conversation(telegram_id=telegram_id)
     db.add(conversation)
     await db.flush()
     return conversation
+
+
+async def get_support_photo(db: AsyncSession, conversation_id: int, telegram_id: int, state: dict) -> str | None:
+    query = select(Message.media_file_id).where(
+        Message.conversation_id == conversation_id,
+        Message.telegram_id == telegram_id,
+        Message.role == 'user',
+        Message.media_type == 'photo',
+    )
+    if isinstance(state.get('attachment_message_id'), int):
+        query = query.where(Message.id == state['attachment_message_id'])
+    elif isinstance(state.get('attachment_file_id'), str):
+        query = query.where(Message.media_file_id == state['attachment_file_id'])
+    else:
+        return None
+    return await db.scalar(query.order_by(Message.id.desc()).limit(1))
 
 
 async def add_message(
@@ -179,7 +198,7 @@ async def save_summary(
     conversation.summarized_message_count = message_count
     conversation.summarized_up_to_id = up_to_id
     conversation.user_turns_since_summary = 0
-    conversation.summary_updated_at = datetime.now(timezone.utc)
+    conversation.summary_updated_at = datetime.now(UTC)
 
 
 async def prune_messages(db: AsyncSession, keep_last: int) -> int:
@@ -197,7 +216,7 @@ async def mark_escalated(db: AsyncSession, conversation_id: int) -> None:
     conversation = await db.get(Conversation, conversation_id)
     if conversation:
         conversation.escalated = True
-        conversation.updated_at = datetime.now(timezone.utc)
+        conversation.updated_at = datetime.now(UTC)
 
 
 async def list_recent_messages(
@@ -224,7 +243,7 @@ async def count_messages(db: AsyncSession, telegram_id: int | None = None) -> in
 
 async def count_user_messages_today(db: AsyncSession, telegram_id: int) -> int:
     """Count user-role messages for telegram_id since start of the current UTC day."""
-    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     result = await db.execute(
         select(func.count(Message.id)).where(
             Message.telegram_id == telegram_id,

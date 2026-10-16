@@ -566,3 +566,139 @@ async def test_generic_topup_without_renewal_has_correct_navigation(flow, suffix
     assert not result['escalate']
     assert not captured['prompts']
     assert not captured['queries']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('question', ['27373', 'Что', 'Как улучшить качество'])
+async def test_messages_after_promo_do_not_repeat_navigation(flow, question):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Как активировать промокод')
+    captured['reply'] = 'Уточните, что нужно проверить.'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+    assert result['answer'] == captured['reply']
+    assert 'Путь: Баланс' not in result['answer']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('question', ['Другой вопрос', 'Другое', 'Я другой вопрос задал', 'Другая тема'])
+async def test_explicit_topic_switch_exits_payment_intake_and_drops_attachment(flow, monkeypatch, question):
+    captured, agent_mod, Session = flow
+
+    async with Session() as db:
+        old = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        old_id = old.id
+        old.summary = 'Нужно проверить оплату с email buyer@example.com'
+        old.support_state = {
+            'issue': 'payment_missing', 'purchase_channel': 'site', 'registration_method': 'email',
+            'email': 'buyer@example.com', 'receipt_reported': True, 'attachment_file_id': 'old-photo',
+        }
+        await agent_mod.crud.add_message(db, old.id, 4242, 'assistant', 'Пришлите чек или выписку.')
+        await db.commit()
+    account = AsyncMock(return_value='Нет подтверждённой связи указанного email')
+    monkeypatch.setattr(agent_mod, 'build_user_context', account)
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+        active = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert active.id != old_id
+        assert active.summary is None
+        assert active.support_state == {'issue': 'other'}
+    assert result['answer'] == 'Напишите ваш новый вопрос.'
+    assert not result['escalate']
+    assert result['support_photo'] is None
+    assert result['support_context'] == ''
+    account.assert_not_awaited()
+    captured['reply'] = 'Попробуйте другой сервер.'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Как улучшить качество?')
+    assert 'buyer@example.com' not in captured['prompts'][-1]
+    assert not any('Пришлите чек' in str(item['content']) for item in captured['messages'])
+    assert 'email' not in result['answer']
+
+
+@pytest.mark.asyncio
+async def test_refund_typo_after_partnership_never_reuses_partnership_text(flow):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Хочу предложить сотрудничество')
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Возавтрат денег')
+    assert result['escalate']
+    assert 'сотрудничеств' not in result['answer']
+    assert result['answer'] == 'Передаю обращение команде для проверки, подождите, пожалуйста.'
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+async def test_topic_switch_with_question_answers_new_question_immediately(flow):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        old = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        old_id = old.id
+        old.support_state = {'issue': 'payment_missing', 'email': 'buyer@example.com'}
+        await db.commit()
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Другой вопрос: как подключить подписку?')
+        active = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert active.id != old_id
+    assert 'https://web.slig.app/connection' in result['answer']
+    assert not result['escalate']
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+async def test_concurrent_users_receive_only_their_own_current_photo(flow):
+    _, agent_mod, Session = flow
+
+    async def submit(user_id, file_id):
+        async with Session() as db:
+            return await agent_mod.support_agent.generate_answer(
+                db, user_id, 'Позови человека', image_url='data:image/png;base64,AA==', media_file_id=file_id,
+            )
+
+    first, second = await asyncio.gather(submit(4242, 'photo-user-A'), submit(5252, 'photo-user-B'))
+    assert first['support_photo'] == 'photo-user-A'
+    assert second['support_photo'] == 'photo-user-B'
+    async with Session() as db:
+        repeat = await agent_mod.support_agent.generate_answer(db, 4242, 'Позови человека')
+    assert repeat['support_photo'] == 'photo-user-A'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reference', ['message_id', 'legacy_file_id', 'previous_case', 'wrong_message_owner'])
+async def test_attachment_reference_is_checked_against_user_and_case(flow, reference):
+    _, agent_mod, Session = flow
+    async with Session() as db:
+        owner = await agent_mod.crud.start_conversation(db, 5252)
+        photo = await agent_mod.crud.add_message(db, owner.id, 5252, 'user', '[изображение]', has_media=True, media_type='photo', media_file_id='private-photo')
+        target = await agent_mod.crud.start_conversation(db, 4242)
+        if reference == 'previous_case':
+            target = await agent_mod.crud.start_conversation(db, 5252)
+        if reference == 'wrong_message_owner':
+            photo = await agent_mod.crud.add_message(db, target.id, 5252, 'user', '[изображение]', has_media=True, media_type='photo', media_file_id='private-photo')
+        state = {'attachment_file_id': 'private-photo'} if reference == 'legacy_file_id' else {'attachment_message_id': photo.id}
+        assert await agent_mod.crud.get_support_photo(db, target.id, target.telegram_id, state) is None
+
+
+@pytest.mark.asyncio
+async def test_new_photo_replaces_prior_attachment_in_same_case(flow):
+    captured, agent_mod, Session = flow
+    captured['reply'] = 'Уточните вопрос по фото.'
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Первое фото', image_url='data:image/png;base64,AA==', media_file_id='old-photo')
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Позови человека', image_url='data:image/png;base64,BB==', media_file_id='new-photo')
+    assert result['support_photo'] == 'new-photo'
+
+
+@pytest.mark.asyncio
+async def test_old_photo_does_not_follow_user_into_new_case(flow):
+    _, agent_mod, Session = flow
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Позови человека', image_url='data:image/png;base64,AA==', media_file_id='old-photo')
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Другой вопрос')
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Позови человека')
+    assert result['support_photo'] is None

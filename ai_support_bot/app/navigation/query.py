@@ -21,16 +21,23 @@ def navigation_target(query: str) -> str | None:
         return 'balance_topup'
     if re.search(r'истори\w*.*(?:операц|платеж|платёж)', text):
         return 'balance_history'
-    if re.search(r'подключ\w*.*vpn|подключ\w*.*впн|ссылк\w*.*подключ|настро\w*.*vpn', text):
+    if re.search(r'подключ\w*.*(?:vpn|впн|подписк)|ссылк\w*.*подключ|настро\w*.*vpn', text):
         return 'subscription_connect'
     return None
+
+
+def _is_channel_followup(question: str) -> bool:
+    text = question.strip().casefold().rstrip('?.!')
+    return bool(re.fullmatch(
+        r'(?:(?:а\s+)?(?:теперь\s+)?(?:покажи\s+)?(?:как\s+)?|(?:нужна\s+)?инструкция\s+|(?:а\s+)?(?:как|где)\s+(?:это\s+|там\s+)?)'
+        r'(?:(?:именно|только)\s+)?(?:для\s+|в\s+|на\s+)?(?:сайт\w*|кабинет\w*|(?:telegram|телеграм\w*)[- ]бот\w*|telegram|телеграм\w*|бот\w*|tg|тг)', text,
+    ))
 
 
 def contextual_navigation_query(question: str, history: list, summary: str | None = None) -> str:
     if navigation_target(question):
         return question.strip()
-    followup = bool(re.search(r'^(?:а\b|а теперь|нужна инструкция|теперь|покажи|как там|где это)', question.strip(), re.IGNORECASE))
-    if not followup and len(question.strip()) >= 25:
+    if not _is_channel_followup(question):
         return question.strip()
     for item in reversed(history):
         if getattr(item, 'role', '') != 'user':
@@ -38,6 +45,6 @@ def contextual_navigation_query(question: str, history: list, summary: str | Non
         content = getattr(item, 'content', '') or ''
         if navigation_target(content):
             return content[:300] + '\n' + question.strip()
-    if summary and followup:
-        return summary[:300] + '\n' + question.strip()
+        if not _is_channel_followup(content):
+            break
     return question.strip()

@@ -17,6 +17,21 @@ def boundary_answer(question: str) -> str | None:
     return None
 
 
+def topic_switch_question(question: str) -> str | None:
+    text = question.strip()
+    marker = re.search(r'\b(?:другой|новый)\s+вопрос\b|\b(?:другая|новая)\s+тема\b|\b(?:сменим|сменить|поменяем)\s+тему\b|\bзабудь\s+(?:прошлый|предыдущий)\s+вопрос\b|^другое[.!?]*$', text, re.IGNORECASE)
+    if not marker:
+        return None
+    remainder = text[marker.end():].strip(' :—,-.!?')
+    return remainder if re.match(r'^(?:как|где|почему|что|зачем|како\w*|сколько|vpn|впн)\b', remainder, re.IGNORECASE) else ''
+
+
+def starts_unrelated_question(question: str) -> bool:
+    return bool(re.match(r'^\s*(?:как|где|почему|зачем|како\w*|сколько)\b', question, re.IGNORECASE)) and not re.search(
+        r'плат[её]ж|оплат|попол|деньг|списал|чек|выписк|email|почт|регистр|прислать|отправить|передать|это|там', question, re.IGNORECASE,
+    )
+
+
 def keeps_account_scope(question: str) -> bool:
     return bool(re.search(r'баланс|подписк|аккаунт|email|почт|ссылк|плат[её]ж|операци|данные|тот же|этот же|\bтам\b|^\s*(?:да|нет|покажи|проверь)\b', question, re.IGNORECASE))
 
@@ -61,7 +76,7 @@ def mandatory_handoff(question: str, history: list) -> str | None:
         return 'human'
     if re.search(r'передайте\s+(?:это\s+)?обращение|передайте\s+.*команде', text):
         return 'human'
-    if re.search(r'(?:хочу|прошу|можно|нужно)\s+(?:сделать\s+)?(?:возврат|вернуть деньги)|верните\s+(?:мне\s+)?деньги|возврат средств', text):
+    if re.search(r'(?:хочу|прошу|можно|нужно)\s+(?:сделать\s+)?(?:возврат|вернуть деньги)|верните\s+(?:мне\s+)?деньги|\bвоз[а-яё]{0,3}в?рат[а-яё]*\s+(?:денег|средств|оплат)', text) or re.fullmatch(r'\s*воз[а-яё]{0,3}в?рат[а-яё]*[.!?\s]*', text):
         return 'refund'
     if re.search(r'сотрудничеств|предложени\w*\s+(?:о\s+)?реклам', text) and not re.search(r'условия реферальн|как.*реферальн', text):
         return 'partnership'

@@ -98,3 +98,31 @@ def test_personal_payment_questions_are_not_generic_renewal_guidance(question):
     from ai_support_bot.app.services.response_rules import is_topup_without_renewal
 
     assert not is_topup_without_renewal(question)
+
+
+@pytest.mark.parametrize('question', ['27373', 'Что', 'Как улучшить качество', 'Я другой вопрос задал', 'Другой вопрос', 'А какая скорость?'])
+def test_new_or_ambiguous_replies_never_inherit_old_navigation(question):
+    history = [SimpleNamespace(role='user', content='Как активировать промокод')]
+    assert contextual_navigation_query(question, history, 'Ранее обсуждали промокод') == question
+
+
+def test_channel_followup_stops_at_intervening_new_topic():
+    history = [
+        SimpleNamespace(role='user', content='Как активировать промокод'),
+        SimpleNamespace(role='user', content='Как улучшить качество'),
+    ]
+    assert contextual_navigation_query('А на сайте?', history) == 'А на сайте?'
+
+
+@pytest.mark.parametrize('question', ['Возавтрат денег', 'Возврат денег', 'Возрат денег', 'Возврат', 'Хочу возврат денег'])
+def test_refund_including_reported_typo_uses_refund_handoff(question):
+    assert mandatory_handoff(question, []) == 'refund'
+
+
+@pytest.mark.parametrize('question', ['Какой возраст сервиса?', 'Как активировать промокод?', 'Как вернуть ссылку подписки?'])
+def test_refund_typo_matching_does_not_capture_other_questions(question):
+    assert mandatory_handoff(question, []) is None
+
+
+def test_connect_subscription_is_navigation_request():
+    assert navigation_target('Как подключить подписку') == 'subscription_connect'

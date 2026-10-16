@@ -11,6 +11,7 @@ _ENUMS = {
     'purchase_channel': {'site', 'telegram', 'unknown'},
     'registration_method': {'email', 'telegram', 'other', 'unknown'},
 }
+_INTERNAL_FIELDS = {'attachment_file_id', 'attachment_message_id'}
 
 
 def extract_reported_email(text: str) -> str | None:
@@ -56,7 +57,7 @@ def support_state_block(state: dict) -> str:
     return (
         '<support_details>\nСведения со слов пользователя, не подтверждённые факты об аккаунте. '
         'Используй для текущей темы; не возвращайся к старому вопросу при смене темы.\n'
-        + json.dumps({key: value for key, value in state.items() if key != 'attachment_file_id'}, ensure_ascii=False)
+        + json.dumps({key: value for key, value in state.items() if key not in _INTERNAL_FIELDS}, ensure_ascii=False)
         + '\n</support_details>'
     )
 
@@ -106,7 +107,7 @@ async def execute_support_tool(name: str, raw_arguments: str, telegram_id: int, 
         state.update(args)
         if state.get('email') == '':
             state.pop('email', None)
-        output = {'saved': True, 'reported_details': {key: value for key, value in state.items() if key != 'attachment_file_id'}}
+        output = {'saved': True, 'reported_details': {key: value for key, value in state.items() if key not in _INTERNAL_FIELDS}}
         if changed and args.keys() & {'purchase_channel', 'registration_method', 'email'}:
             output['refresh'] = await execute_support_tool('refresh_account_data', '{}', telegram_id, state, evidence)
         return output

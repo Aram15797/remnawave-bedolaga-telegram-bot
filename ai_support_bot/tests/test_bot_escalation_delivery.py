@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,15 +14,19 @@ class FakeBot:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
         self.photos: list[tuple[int, str]] = []
+        self.photo_replies: list[tuple[int, int]] = []
 
     async def send_message(self, chat_id, text, parse_mode=None):
         self.sent.append((chat_id, text))
+        return SimpleNamespace(message_id=len(self.sent))
 
     async def send_chat_action(self, chat_id, action):
         return None
 
-    async def send_photo(self, chat_id, photo, caption=None):
+    async def send_photo(self, chat_id, photo, caption=None, reply_parameters=None):
         self.photos.append((chat_id, photo))
+        if reply_parameters:
+            self.photo_replies.append((chat_id, reply_parameters.message_id))
 
 
 class FakeUser:
@@ -129,6 +134,7 @@ async def test_saved_attachment_goes_only_to_admin_recipients(monkeypatch):
     message = FakeMessage(user_id=555, text='Передайте <обращение> на проверку')
     await bot_mod.handle_message(message)
     assert message.bot.photos == [(999, 'telegram-photo-id')]
+    assert message.bot.photo_replies == [(999, 1)]
     assert '&lt;обращение&gt;' in message.bot.sent[0][1]
 
 
@@ -220,3 +226,24 @@ def test_admin_recipients_excludes_requesting_user(monkeypatch):
     monkeypatch.setattr(bot_mod.settings, 'ADMIN_IDS', '1,2,3')
     assert sorted(bot_mod._admin_recipients(exclude_telegram_id=2)) == [1, 3]
     assert sorted(bot_mod._admin_recipients()) == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_photo_notifications_reply_to_matching_text(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(bot_mod.settings, 'ADMIN_IDS', '999')
+
+    class YieldingBot(FakeBot):
+        async def send_message(self, chat_id, text, parse_mode=None):
+            result = await super().send_message(chat_id, text, parse_mode)
+            await asyncio.sleep(0)
+            return result
+
+    bot = YieldingBot()
+    await asyncio.gather(
+        bot_mod._notify_admins(bot, 'Обращение A, ID 111', exclude_telegram_id=111, photo='photo-A'),
+        bot_mod._notify_admins(bot, 'Обращение B, ID 222', exclude_telegram_id=222, photo='photo-B'),
+    )
+    for (_, photo), (_, reply_id) in zip(bot.photos, bot.photo_replies, strict=True):
+        assert photo[-1] in bot.sent[reply_id - 1][1]

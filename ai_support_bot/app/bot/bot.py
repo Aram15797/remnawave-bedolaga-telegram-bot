@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, ReplyParameters
 
 from ai_support_bot.app.core.config import settings
 from ai_support_bot.app.db import crud
@@ -129,9 +129,12 @@ def _admin_recipients(exclude_telegram_id: int | None = None) -> list[int]:
 async def _notify_admins(bot: Bot, text: str, exclude_telegram_id: int | None = None, photo: str | None = None) -> None:
     for admin_id in _admin_recipients(exclude_telegram_id):
         try:
-            await bot.send_message(admin_id, text, parse_mode='HTML')
+            notification = await bot.send_message(admin_id, text, parse_mode='HTML')
             if photo:
-                await bot.send_photo(admin_id, photo, caption=f'Вложение к обращению пользователя {exclude_telegram_id}')
+                await bot.send_photo(
+                    admin_id, photo, caption=f'Вложение к обращению пользователя {exclude_telegram_id}',
+                    reply_parameters=ReplyParameters(message_id=notification.message_id),
+                )
         except Exception as err:
             logger.warning('Failed to notify admin', admin_id=admin_id, error=str(err))
 
@@ -242,7 +245,9 @@ async def handle_message(message: Message) -> None:
             hedged=bool(result.get('hedged')),
         )
         user_name, username_str = _user_label(message)
-        reason = 'ИИ не уверен в ответе (нет данных в базе знаний)' if result.get('hedged') else 'запрошено моделью'
+        reason = 'ИИ не уверен в ответе (нет данных в базе знаний)' if result.get('hedged') else (
+            'передача по запросу пользователя или правилам поддержки' if result.get('answer_source') == 'rules' else 'запрошено моделью'
+        )
         notify_text = (
             '⚠️ <b>Внимание: Обращение требует внимания оператора!</b>\n\n'
             f'<b>Пользователь:</b> <a href="tg://user?id={telegram_id}">{user_name}</a>{username_str} '

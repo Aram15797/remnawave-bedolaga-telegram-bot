@@ -36,6 +36,8 @@ from ai_support_bot.app.services.response_rules import (
     payment_next_step,
     smalltalk_answer,
     starts_technical_issue,
+    starts_unrelated_question,
+    topic_switch_question,
     unsupported_price,
 )
 from ai_support_bot.app.services.service_catalog import build_service_catalog, build_user_offers
@@ -364,11 +366,25 @@ class SupportAgent:
 
         context_limit = settings_store.get_int('CONTEXT_MESSAGES') or 8
         history = await crud.get_conversation_context(db, conversation.id, context_limit)
+        switched_question = topic_switch_question(question)
+        if switched_question is not None or (
+            support_state.get('issue') == 'payment_missing'
+            and (starts_technical_issue(question) or starts_unrelated_question(question))
+        ):
+            conversation = await crud.start_conversation(db, telegram_id)
+            summary = None
+            support_state = {'issue': 'other'}
+            history = []
+            if switched_question:
+                question = switched_question
+            smalltalk = _is_smalltalk(question) and not image_url
         if history and question.strip().casefold() in {'да', 'нет', 'ага', 'угу'}:
             smalltalk = False
 
         forced_reason = mandatory_handoff(question, history)
         direct_answer = None if forced_reason or image_url else boundary_answer(question) or apps_answer(question, history)
+        if switched_question == '' and not image_url:
+            direct_answer = 'Напишите ваш новый вопрос.'
         if smalltalk and not forced_reason and not direct_answer:
             direct_answer = smalltalk_answer(question)
         if not forced_reason and image_url and not settings_store.get_bool('VISION_ENABLED') and not question.strip():
@@ -524,12 +540,7 @@ class SupportAgent:
         if not re.sub(r'<[^>]*>', '', answer_text).strip():
             answer_text = NOTICE
             escalate = True
-        conversation.support_state = support_state
-        if media_file_id:
-            support_state['attachment_file_id'] = media_file_id
-            conversation.support_state = dict(support_state)
-
-        await crud.add_message(
+        user_message = await crud.add_message(
             db,
             conversation_id=conversation.id,
             telegram_id=telegram_id,
@@ -539,6 +550,11 @@ class SupportAgent:
             media_type='photo' if image_url or media_file_id else None,
             media_file_id=media_file_id,
         )
+        if media_file_id:
+            support_state['attachment_message_id'] = user_message.id
+            support_state.pop('attachment_file_id', None)
+        conversation.support_state = dict(support_state)
+        support_photo = await crud.get_support_photo(db, conversation.id, telegram_id, support_state) if escalate else None
         await crud.add_message(
             db,
             conversation_id=conversation.id,
@@ -571,7 +587,7 @@ class SupportAgent:
             'model': model_used,
             'support_context': support_details_for_admin(support_state),
             'answer_source': 'rules' if model_used == 'rules' else 'model',
-            'support_photo': support_state.get('attachment_file_id') if escalate else None,
+            'support_photo': support_photo,
         }
 
 
