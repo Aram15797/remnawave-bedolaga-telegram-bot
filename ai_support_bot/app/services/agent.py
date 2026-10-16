@@ -15,6 +15,7 @@ from ai_support_bot.app.services import settings_store
 from ai_support_bot.app.services.dialogue_tools import (
     SUPPORT_TOOLS,
     execute_support_tool,
+    extract_registration_method,
     extract_reported_email,
     support_details_for_admin,
     support_state_block,
@@ -26,6 +27,7 @@ from ai_support_bot.app.services.response_rules import (
     NOTICE,
     apps_answer,
     boundary_answer,
+    cannot_provide_payment_details,
     compact_knowledge,
     deduplicate_answer,
     handoff_answer,
@@ -35,8 +37,8 @@ from ai_support_bot.app.services.response_rules import (
     mandatory_handoff,
     payment_next_step,
     smalltalk_answer,
+    starts_new_topic,
     starts_technical_issue,
-    starts_unrelated_question,
     topic_switch_question,
     unsupported_price,
 )
@@ -367,10 +369,7 @@ class SupportAgent:
         context_limit = settings_store.get_int('CONTEXT_MESSAGES') or 8
         history = await crud.get_conversation_context(db, conversation.id, context_limit)
         switched_question = topic_switch_question(question)
-        if switched_question is not None or (
-            support_state.get('issue') == 'payment_missing'
-            and (starts_technical_issue(question) or starts_unrelated_question(question))
-        ):
+        if switched_question is not None or starts_new_topic(question, history, support_state):
             conversation = await crud.start_conversation(db, telegram_id)
             summary = None
             support_state = {'issue': 'other'}
@@ -409,17 +408,30 @@ class SupportAgent:
         if forced_reason == 'partnership':
             support_state = {'issue': 'other'}
 
+        registration_refresh = None
+        if support_state.get('issue') == 'payment_missing' and not forced_reason and not direct_answer:
+            if cannot_provide_payment_details(question, history):
+                forced_reason = 'payment_review'
+            elif support_state.get('purchase_channel') == 'site':
+                registration_method = extract_registration_method(question, history)
+                if registration_method:
+                    saved = await execute_support_tool(
+                        'save_support_details', json.dumps({'registration_method': registration_method}),
+                        telegram_id, support_state, question,
+                    )
+                    registration_refresh = saved.get('refresh', {}).get('account_data')
+
         reported_email = extract_reported_email(question)
         if support_state.get('issue') != 'payment_missing' and support_state.get('email') and not reported_email and not keeps_account_scope(question):
             support_state = {'issue': 'other'}
         email = reported_email or support_state.get('email')
         user_context = ''
         if not smalltalk and not forced_reason and not direct_answer:
-            user_context = await build_user_context(telegram_id, email=email) if email else await build_user_context(telegram_id)
+            user_context = registration_refresh or (await build_user_context(telegram_id, email=email) if email else await build_user_context(telegram_id))
         if email and ('Нет подтверждённой связи' in user_context or 'не подтверждены' in user_context):
             if support_state.get('issue') == 'payment_missing':
                 support_state['email'] = email
-                if support_state.get('receipt_reported') and support_state.get('purchase_channel'):
+                if payment_next_step(support_state)[1]:
                     forced_reason = 'payment_review'
                     direct_answer = 'Передаю указанный email и сведения о платеже команде для проверки. Привязывать Telegram для ручной проверки не требуется.'
             else:
@@ -517,7 +529,7 @@ class SupportAgent:
                 _response_cache.set(cache_key, answer_text)
 
         escalate = has_escalation_marker(answer_text)
-        if not escalate and not direct_answer and support_state.get('issue') == 'payment_missing':
+        if not forced_reason and not direct_answer and support_state.get('issue') == 'payment_missing':
             answer_text, escalate = payment_next_step(support_state)
         answer_text = deduplicate_answer(strip_escalation_marker(answer_text))
         if not answer_text:

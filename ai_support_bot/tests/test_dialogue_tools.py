@@ -120,3 +120,34 @@ async def test_invalid_refresh_does_not_access_database(monkeypatch):
     result = await dialogue_tools.execute_support_tool('refresh_account_data', '{"email":"guessed@example.com"}', 42, {}, '')
     assert 'error' in result
     refresh.assert_not_awaited()
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('Да, регистрировался через почту', 'email'),
+    ('Регистрировалась по электронной почте', 'email'),
+    ('Через почту', 'email'),
+    ('Через Telegram', 'telegram'),
+    ('Регистрировался другим способом', 'other'),
+    ('Не через почту', 'other'),
+    ('Я не регистрировался через почту', 'other'),
+    ('Не знаю, регистрировался ли через почту', None),
+    ('Как зарегистрироваться через почту?', None),
+    ('Если зарегистрировался через почту?', None),
+    ('Кажется, через почту', None),
+    ('да', None),
+])
+def test_explicit_registration_details_do_not_depend_on_model_tool_call(text, expected):
+    from types import SimpleNamespace
+
+    history = [SimpleNamespace(role='assistant', content='На сайте регистрировались через почту или другим способом?')]
+    assert dialogue_tools.extract_registration_method(text, history) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [('да', 'email'), ('нет', 'other')])
+def test_yes_no_registration_requires_last_binary_registration_question(text, expected):
+    from types import SimpleNamespace
+
+    history = [SimpleNamespace(role='assistant', content='На сайте вы регистрировались через почту?')]
+    assert dialogue_tools.extract_registration_method(text, history) == expected
+    history = [SimpleNamespace(role='assistant', content='Прислали чек?')]
+    assert dialogue_tools.extract_registration_method(text, history) is None

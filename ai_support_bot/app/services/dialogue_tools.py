@@ -18,6 +18,29 @@ def extract_reported_email(text: str) -> str | None:
     emails = _EMAIL_RE.findall(text)
     return emails[0] if len(emails) == 1 else None
 
+
+def extract_registration_method(text: str, history: list) -> str | None:
+    question = text.strip().casefold().rstrip('.!?')
+    if re.match(r'^(?:как|если|можно ли)\b', question) or re.search(r'не знаю|не помню|кажется|возможно|ли\s+(?:через|по)\b', question):
+        return None
+    previous = next((item.content or '' for item in reversed(history) if item.role == 'assistant'), '')
+    registration_context = bool(re.search(r'регистр|зарегистр', question + ' ' + previous, re.IGNORECASE))
+    if not registration_context:
+        return None
+    email_denied = re.search(r'не\s+(?:через|по)\s+(?:электронн\w*\s+)?(?:почт\w*|email)|не\s+регистр|не\s+зарегистр', question)
+    if (re.search(r'(?:через|по)\s+(?:электронн\w*\s+)?(?:почт\w*|email)', question) or question in {'почта', 'email'}) and not email_denied:
+        return 'email'
+    if re.search(r'через\s+(?:telegram|телеграм\w*|бот\w*)', question):
+        return 'telegram'
+    if re.search(r'другим\s+способом', question) or (email_denied and re.search(r'почт|email', question)):
+        return 'other'
+    if re.search(r'регистр|зарегистр', previous, re.IGNORECASE) and re.search(r'почт|email', previous, re.IGNORECASE) and not re.search(r'\bили\b', previous, re.IGNORECASE):
+        if question in {'да', 'ага', 'угу', 'yes'}:
+            return 'email'
+        if question in {'нет', 'no'}:
+            return 'other'
+    return None
+
 SUPPORT_TOOLS = [
     {
         'type': 'function',

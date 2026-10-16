@@ -126,3 +126,37 @@ def test_refund_typo_matching_does_not_capture_other_questions(question):
 
 def test_connect_subscription_is_navigation_request():
     assert navigation_target('Как подключить подписку') == 'subscription_connect'
+
+
+@pytest.mark.parametrize(('old', 'new'), [
+    ('Как активировать промокод', 'Как улучшить качество VPN?'),
+    ('VPN не работает на iPhone', 'Как купить подписку?'),
+    ('Какие приложения для Android?', 'Как активировать промокод?'),
+    ('Сколько устройств можно подключить?', 'Как привязать Telegram?'),
+    ('Как купить подписку?', 'Не пришли деньги'),
+    ('Как улучшить качество VPN?', 'Почему не активируется промокод?'),
+    ('Хочу предложить сотрудничество', 'Возавтрат денег'),
+])
+def test_automatic_topic_switch_is_independent_of_payment_state(old, new):
+    from ai_support_bot.app.services.response_rules import starts_new_topic
+
+    history = [SimpleNamespace(role='user', content=old)]
+    assert starts_new_topic(new, history, {'issue': 'other'})
+
+
+@pytest.mark.parametrize(('old', 'followup'), [
+    ('VPN не работает на iPhone', 'Перезапустил, не помогло'),
+    ('Как подключить VPN?', 'Нужна инструкция именно для сайта'),
+    ('Как подключить VPN?', 'А теперь покажи как в Telegram-боте'),
+    ('Какие приложения скачать на Android?', 'А для iPhone?'),
+    ('Как купить подписку?', 'Сколько стоит?'),
+    ('Как активировать промокод?', 'Где это?'),
+    ('Как удалить устройство?', 'Как удалить его?'),
+    ('VPN не работает на iPhone', 'Лимит устройств — 3'),
+    ('Как купить подписку?', 'да'),
+])
+def test_followups_keep_their_topic_without_payment_state(old, followup):
+    from ai_support_bot.app.services.response_rules import starts_new_topic
+
+    history = [SimpleNamespace(role='user', content=old)]
+    assert not starts_new_topic(followup, history, {'issue': 'other'})

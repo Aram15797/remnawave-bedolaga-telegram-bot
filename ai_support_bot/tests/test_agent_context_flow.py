@@ -117,7 +117,8 @@ async def test_topic_switch_keeps_focus_rule_and_contextualizes_retrieval(flow):
     assert 'ПРАВИЛО ФОКУСА' in prompt
 
     history_roles = [m['role'] for m in captured['messages'][1:-1]]
-    assert history_roles == ['user', 'assistant', 'user', 'assistant']
+    assert history_roles == ['user', 'assistant']
+    assert 'не проходит оплата картой' not in last_query
 
 
 @pytest.mark.asyncio
@@ -577,7 +578,7 @@ async def test_messages_after_promo_do_not_repeat_navigation(flow, question):
     captured['reply'] = 'Уточните, что нужно проверить.'
     async with Session() as db:
         result = await agent_mod.support_agent.generate_answer(db, 4242, question)
-    assert result['answer'] == captured['reply']
+    assert result['answer'] == ('Что именно нужно пояснить?' if question == 'Что' else captured['reply'])
     assert 'Путь: Баланс' not in result['answer']
 
 
@@ -702,3 +703,105 @@ async def test_old_photo_does_not_follow_user_into_new_case(flow):
     async with Session() as db:
         result = await agent_mod.support_agent.generate_answer(db, 4242, 'Позови человека')
     assert result['support_photo'] is None
+
+
+@pytest.mark.asyncio
+async def test_missing_payment_marker_cannot_escalate_incomplete_intake(flow):
+    captured, agent_mod, Session = flow
+    captured['responses'] = [
+        _tool_reply('save_support_details', {'receipt_reported': True}),
+        {'content': 'Где покупали? Как регистрировались?\n[[ESCALATE]]'},
+    ]
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Не пришли деньги. Выписку уже отправил.')
+    assert not result['escalate']
+    assert result['answer'] == 'Где вы оплачивали: на сайте или в Telegram-боте?'
+
+
+@pytest.mark.asyncio
+async def test_explicit_email_registration_is_saved_when_model_omits_tool(flow):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        conversation.support_state = {'issue': 'payment_missing', 'purchase_channel': 'site', 'receipt_reported': True}
+        await db.commit()
+    captured['reply'] = 'На сайте вы регистрировались через почту или другим способом?'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Да, регистрировался через почту')
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert conversation.support_state['registration_method'] == 'email'
+    assert 'адрес электронной почты' in result['answer']
+    assert not result['escalate']
+
+
+@pytest.mark.asyncio
+async def test_receipt_unavailable_without_explicit_handoff_request_is_escalated(flow):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        conversation = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        conversation.support_state = {'issue': 'payment_missing', 'purchase_channel': 'telegram'}
+        await db.commit()
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Не могу сейчас прислать чек')
+    assert result['escalate']
+    assert not captured['prompts']
+    assert 'Передаю' in result['answer']
+
+
+@pytest.mark.asyncio
+async def test_what_after_promo_asks_for_clarification_without_repeating_path(flow):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Как активировать промокод')
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Что?')
+    assert result['answer'] == 'Что именно нужно пояснить?'
+    assert not captured['prompts']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('old_question', 'new_question'), [
+    ('Как активировать промокод', 'Как улучшить качество VPN?'),
+    ('VPN не работает на iPhone', 'Как купить подписку?'),
+    ('Сколько устройств можно подключить?', 'Как активировать промокод?'),
+])
+async def test_automatic_topic_switch_clears_context_for_non_payment_questions(flow, old_question, new_question):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, old_question)
+        old = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        old_id = old.id
+        old.summary = 'OLD_TOPIC_SECRET'
+        old.support_state = {'issue': 'other', 'attachment_file_id': 'old-photo'}
+        await db.commit()
+    captured['prompts'].clear()
+    captured['queries'].clear()
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, new_question)
+        active = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert active.id != old_id
+        assert active.summary is None
+        assert 'attachment_file_id' not in active.support_state
+    assert result['support_photo'] is None
+    assert all('OLD_TOPIC_SECRET' not in prompt for prompt in captured['prompts'])
+    assert all(old_question not in query for query in captured['queries'])
+    if captured['prompts']:
+        assert len(captured['messages']) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('old_question', [
+    'VPN не работает на iPhone', 'Как активировать промокод', 'Сколько устройств можно подключить?',
+])
+async def test_explicit_new_question_works_for_every_support_topic(flow, old_question):
+    _, agent_mod, Session = flow
+    async with Session() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, old_question)
+        old = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        old_id = old.id
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'Другой вопрос')
+        active = await agent_mod.crud.get_or_create_conversation(db, 4242)
+        assert active.id != old_id
+    assert result['answer'] == 'Напишите ваш новый вопрос.'
+    assert not result['escalate']

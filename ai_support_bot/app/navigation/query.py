@@ -26,7 +26,7 @@ def navigation_target(query: str) -> str | None:
     return None
 
 
-def _is_channel_followup(question: str) -> bool:
+def is_channel_followup(question: str) -> bool:
     text = question.strip().casefold().rstrip('?.!')
     return bool(re.fullmatch(
         r'(?:(?:а\s+)?(?:теперь\s+)?(?:покажи\s+)?(?:как\s+)?|(?:нужна\s+)?инструкция\s+|(?:а\s+)?(?:как|где)\s+(?:это\s+|там\s+)?)'
@@ -37,7 +37,7 @@ def _is_channel_followup(question: str) -> bool:
 def contextual_navigation_query(question: str, history: list, summary: str | None = None) -> str:
     if navigation_target(question):
         return question.strip()
-    if not _is_channel_followup(question):
+    if not is_channel_followup(question):
         return question.strip()
     for item in reversed(history):
         if getattr(item, 'role', '') != 'user':
@@ -45,6 +45,6 @@ def contextual_navigation_query(question: str, history: list, summary: str | Non
         content = getattr(item, 'content', '') or ''
         if navigation_target(content):
             return content[:300] + '\n' + question.strip()
-        if not _is_channel_followup(content):
+        if not is_channel_followup(content):
             break
     return question.strip()

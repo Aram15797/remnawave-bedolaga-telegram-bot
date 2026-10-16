@@ -1,6 +1,8 @@
 import re
 from decimal import Decimal
 
+from ai_support_bot.app.navigation.query import is_channel_followup, navigation_target
+
 
 NOTICE = 'Передаю обращение команде для проверки, подождите, пожалуйста.'
 CLIENTS = {
@@ -32,6 +34,44 @@ def starts_unrelated_question(question: str) -> bool:
     )
 
 
+def conversation_topic(question: str) -> str | None:
+    text = question.casefold()
+    if is_payment_missing(question) or re.search(r'воз\w*рат.*(?:денег|средств)|верн\w*.*деньг|оплат|плат[её]ж|списал', text):
+        return 'payment'
+    if re.search(r'сотрудничеств|предложени\w*\s+(?:о\s+)?реклам', text):
+        return 'partnership'
+    target = navigation_target(question)
+    if target:
+        return {
+            'subscription_connect': 'vpn', 'subscription_autopay': 'renewal',
+            'subscription_extend': 'renewal', 'balance_topup': 'payment',
+            'balance_history': 'payment', 'web_accounts': 'account', 'web_change_email': 'account',
+        }.get(target, target)
+    if re.search(r'каки\w* приложени|како\w* (?:приложени|клиент)|что скачать|приложени\w* скачать', text) or starts_technical_issue(question):
+        return 'vpn'
+    if re.search(r'скорост|качеств|тормоз|медленно', text):
+        return 'vpn'
+    if re.search(r'лимит.*устройств|сколько.*устройств|удал\w*.*устройств', text) and re.search(r'\?|как|сколько|нужно|удал|ошибк', text):
+        return 'devices'
+    if re.search(r'цен[ауы]|стоимост|тариф|стоит|поч[её]м', text):
+        return 'subs_buy_subscription'
+    if re.search(r'баланс|аккаунт|email|почт|подписк', text) and re.search(r'покажи|проверь|какой|какая|какие|сколько|мой|моя|моего|моей', text):
+        return 'account'
+    return None
+
+
+def starts_new_topic(question: str, history: list, state: dict) -> bool:
+    if is_channel_followup(question) or re.search(r'\b(?:это|этим|этот|эта|этой|его|её|ее|там|тогда)\b|вс[её] равно', question, re.IGNORECASE):
+        return False
+    current = conversation_topic(question)
+    previous = 'payment' if state.get('issue') == 'payment_missing' else next(
+        (topic for item in reversed(history) if item.role == 'user' and (topic := conversation_topic(item.content or ''))), None,
+    )
+    if current and previous:
+        return current != previous
+    return bool(history) and starts_unrelated_question(question)
+
+
 def keeps_account_scope(question: str) -> bool:
     return bool(re.search(r'баланс|подписк|аккаунт|email|почт|ссылк|плат[её]ж|операци|данные|тот же|этот же|\bтам\b|^\s*(?:да|нет|покажи|проверь)\b', question, re.IGNORECASE))
 
@@ -56,8 +96,20 @@ def payment_next_step(state: dict) -> tuple[str, bool]:
     return NOTICE, True
 
 
+def cannot_provide_payment_details(question: str, history: list) -> bool:
+    text = question.strip().casefold().rstrip('.!?')
+    if re.search(r'не могу[^.!?]{0,55}(?:чек|выписк|email|почт)|нет\s+(?:чека|выписки|доступа к почте)|не помню[^.!?]{0,30}(?:email|почт)', text):
+        return True
+    if text not in {'не могу', 'не знаю', 'нет возможности'}:
+        return False
+    previous = next((item.content or '' for item in reversed(history) if item.role == 'assistant'), '')
+    return bool(re.search(r'пришлите.*(?:чек|выписк)|напишите.*(?:почт|email)', previous, re.IGNORECASE))
+
+
 def smalltalk_answer(question: str) -> str | None:
-    text = question.strip().casefold().rstrip('!. 🙂😊👍')
+    text = question.strip().casefold().rstrip('!?. 🙂😊👍')
+    if text in {'что', 'не понял', 'не поняла', 'непонятно'}:
+        return 'Что именно нужно пояснить?'
     if text in {'привет', 'здравствуйте', 'доброе утро', 'добрый день', 'добрый вечер'}:
         return 'Здравствуйте!'
     if text in {'спасибо', 'спасибо большое', 'благодарю', 'спс'}:
