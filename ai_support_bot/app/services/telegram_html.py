@@ -27,7 +27,8 @@ def _link_in_text(match: re.Match, inside_anchor: bool = False) -> str:
     url = original.rstrip('.,;!):]')
     if not _is_service_bot_url(url):
         return escape(original, quote=False)
-    link = 'В Telegram' if inside_anchor else f'<a href="{escape(_bot_deep_link(url), quote=True)}">В Telegram</a>'
+    label = 'https://t.me/SligVPN_bot'
+    link = label if inside_anchor else f'<a href="{escape(_bot_deep_link(url), quote=True)}">{label}</a>'
     return link + escape(original[len(url):], quote=False)
 
 

@@ -181,7 +181,7 @@ def test_support_bot_links_include_start(text):
     'https://web.slig.app/subscriptions',
 ])
 def test_start_normalization_preserves_existing_deep_links_and_other_urls(url):
-    expected = f'<a href="{url}">В Telegram</a>' if '?start' in url else url
+    expected = f'<a href="{url}">https://t.me/SligVPN_bot</a>' if '?start' in url else url
     assert sanitize_telegram_html(url) == expected
     assert sanitize_telegram_html(f'<a href="{url}">Бот</a>') == f'<a href="{url}">Бот</a>'
 
@@ -216,9 +216,9 @@ def test_short_clarification_preserves_topic(question):
     '<a href="https://t.me/SligVPN_bot?start=ai_support">https://t.me/SligVPN_bot?start=ai_support</a>',
 ])
 def test_bot_start_parameter_is_hidden_in_link_target(text):
-    assert sanitize_telegram_html(text) == '<a href="https://t.me/SligVPN_bot?start=ai_support">В Telegram</a>'
+    assert sanitize_telegram_html(text) == '<a href="https://t.me/SligVPN_bot?start=ai_support">https://t.me/SligVPN_bot</a>'
 
 
 def test_bot_link_preserves_query_escaping_and_surrounding_punctuation():
     text = 'Бот (https://t.me/SligVPN_bot?start=ref_123&x=1).'
-    assert sanitize_telegram_html(text) == 'Бот (<a href="https://t.me/SligVPN_bot?start=ref_123&amp;x=1">В Telegram</a>).'
+    assert sanitize_telegram_html(text) == 'Бот (<a href="https://t.me/SligVPN_bot?start=ref_123&amp;x=1">https://t.me/SligVPN_bot</a>).'
