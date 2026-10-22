@@ -1,14 +1,14 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import GetBusinessConnection, ReadBusinessMessage, SendChatAction, SendMessage
-from aiogram.types import BusinessConnection, Message, Update
+from aiogram.methods import AnswerCallbackQuery, GetBusinessConnection, ReadBusinessMessage, SendChatAction, SendMessage
+from aiogram.types import BusinessConnection, CallbackQuery, Message, Update
 
 
 os.environ.setdefault('AISUP_DATABASE_URL', 'sqlite+aiosqlite:///./data/ai_support_test.db')
@@ -16,6 +16,7 @@ os.environ.setdefault('AISUP_MAIN_DATABASE_URL', '')
 os.environ.setdefault('AISUP_INCLUDE_REMNAWAVE_DATA', 'false')
 
 from ai_support_bot.app.bot import bot as bot_mod
+from ai_support_bot.app.db.models import BusinessChatControl
 from ai_support_bot.app.services.openai_client import OpenAIError
 
 
@@ -34,12 +35,51 @@ def service(monkeypatch):
         rights={'can_reply': True, 'can_read_messages': True},
     )
     requests = []
+    controls = {}
+
+    async def get_chat(connection_id, chat_id, owner_id):
+        key = (connection_id, chat_id)
+        if key not in controls:
+            controls[key] = BusinessChatControl(
+                id=len(controls) + 1,
+                connection_id=connection_id,
+                chat_id=chat_id,
+                owner_id=owner_id,
+                manual_pause=False,
+                pause_until=None,
+                revision=0,
+            )
+        return controls[key]
+
+    async def get_by_id(control_id):
+        return next((c for c in controls.values() if c.id == control_id), None)
+
+    async def active(control_id, revision):
+        c = await get_by_id(control_id)
+        return c is not None and c.revision == revision and not bot_mod.business_control.paused(c)
+
+    async def set_manual(control_id, take):
+        c = await get_by_id(control_id)
+        c.manual_pause = take
+        c.pause_until = None
+        c.revision += 1
+
+    async def operator_message(control_id, sent_at):
+
+        c = await get_by_id(control_id)
+        c.pause_until = sent_at + timedelta(minutes=30)
+        c.revision += 1
+
+    for name, replacement in dict(
+        get_chat=get_chat, get_by_id=get_by_id, active=active, set_manual=set_manual, operator_message=operator_message
+    ).items():
+        monkeypatch.setattr(bot_mod.business_control, name, replacement)
 
     async def request(bot, method, **kwargs):
         requests.append(method)
         if isinstance(method, GetBusinessConnection):
             return connection
-        if isinstance(method, (SendChatAction, ReadBusinessMessage)):
+        if isinstance(method, (SendChatAction, ReadBusinessMessage, AnswerCallbackQuery)):
             return True
         return Message(
             message_id=100,
@@ -165,7 +205,7 @@ async def test_business_escalation_admin_notification_uses_regular_bot(service):
     agent.return_value = {'answer': 'Передаю оператору', 'escalate': True}
     await dispatch(bot, message())
     sent = [r for r in requests if isinstance(r, SendMessage)]
-    assert [(r.chat_id, r.business_connection_id) for r in sent] == [(555, 'business-1'), (999, None)]
+    assert [(r.chat_id, r.business_connection_id) for r in sent] == [(555, 'business-1'), (900, None), (999, None)]
     assert not any(isinstance(r, ReadBusinessMessage) for r in requests)
 
 
@@ -270,4 +310,146 @@ async def test_regular_chat_does_not_use_business_read_api(service):
     bot, _, requests, _ = service
     await dispatch(bot, message(business_connection_id=None), business=False)
     assert any(isinstance(r, SendMessage) for r in requests)
+    assert not any(isinstance(r, ReadBusinessMessage) for r in requests)
+
+
+async def control_callback(bot, action, control_id, user_id=900):
+    query = CallbackQuery(
+        id='callback',
+        from_user={'id': user_id, 'is_bot': False, 'first_name': 'Operator'},
+        chat_instance='test',
+        data=f'aisup:{action}:{control_id}',
+    ).as_(bot)
+    await bot_mod.build_dispatcher().feed_update(bot, Update(update_id=10, callback_query=query))
+
+
+@pytest.mark.asyncio
+async def test_manual_owner_message_pauses_only_its_chat_and_bot_echo_does_not(service):
+    bot, connection, requests, agent = service
+    await dispatch(
+        bot,
+        message(
+            from_user=connection.user,
+            message_id=2,
+            text=None,
+            photo=[{'file_id': 'f', 'file_unique_id': 'u', 'width': 1, 'height': 1}],
+        ),
+    )
+    await dispatch(bot, message(message_id=3))
+    agent.assert_not_called()
+    assert not any(isinstance(r, (SendMessage, ReadBusinessMessage)) for r in requests)
+    other = message(chat={'id': 556, 'type': 'private'}, from_user={'id': 556, 'is_bot': False, 'first_name': 'Other'})
+    await dispatch(bot, other)
+    assert agent.call_count == 1
+    echo = message(
+        chat={'id': 556, 'type': 'private'},
+        from_user=connection.user,
+        sender_business_bot={'id': bot.id, 'is_bot': True, 'first_name': 'AI'},
+        message_id=4,
+    )
+    await dispatch(bot, echo)
+    await dispatch(bot, other.model_copy(update={'message_id': 5}))
+    assert agent.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_take_and_resume_buttons_with_authorization(service):
+    bot, _, _, agent = service
+    control = await bot_mod.business_control.get_chat('business-1', 555, 900)
+    await control_callback(bot, 'take', control.id, user_id=555)
+    assert not control.manual_pause
+    await control_callback(bot, 'take', control.id)
+    await dispatch(bot, message())
+    agent.assert_not_called()
+    assert control.manual_pause
+    await control_callback(bot, 'resume', control.id, user_id=999)
+    await dispatch(bot, message(message_id=2))
+    assert agent.call_count == 1
+    assert not control.manual_pause
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('resume', [False, True])
+async def test_takeover_during_generation_suppresses_pending_answer_even_after_resume(service, resume):
+    bot, _, requests, agent = service
+
+    async def generate(*args, **kwargs):
+        await asyncio.sleep(0)
+        control = await bot_mod.business_control.get_chat('business-1', 555, 900)
+        await control_callback(bot, 'take', control.id)
+        if resume:
+            await control_callback(bot, 'resume', control.id)
+        return {'answer': 'Устаревший ответ', 'escalate': False}
+
+    agent.side_effect = generate
+    await dispatch(bot, message())
+    assert not any(isinstance(r, (SendMessage, ReadBusinessMessage)) for r in requests)
+
+
+@pytest.mark.asyncio
+async def test_operator_message_during_generation_suppresses_pending_error(service):
+    bot, connection, requests, agent = service
+
+    async def generate(*args, **kwargs):
+        await dispatch(bot, message(from_user=connection.user, message_id=2))
+        raise OpenAIError('Unavailable')
+
+    agent.side_effect = generate
+    await dispatch(bot, message())
+    assert not any(isinstance(r, SendMessage) for r in requests)
+
+
+@pytest.mark.asyncio
+async def test_escalation_notifications_have_controls(service):
+    bot, _, requests, agent = service
+    agent.side_effect = None
+    agent.return_value = {'answer': 'Передаю оператору', 'escalate': True}
+    await dispatch(bot, message())
+    notices = [r for r in requests if isinstance(r, SendMessage) and r.chat_id in {900, 999}]
+    assert len(notices) == 2
+    for notice in notices:
+        buttons = notice.reply_markup.inline_keyboard[0]
+        assert [b.text for b in buttons] == ['Взять в работу', 'Вернуть ИИ']
+        assert all(len(b.callback_data.encode()) <= 64 for b in buttons)
+
+
+@pytest.mark.asyncio
+async def test_manage_bot_deeplink_shows_controls_only_to_owner(service, monkeypatch):
+    bot, _, requests, _ = service
+    control = await bot_mod.business_control.get_chat('business-1', 555, 900)
+
+    async def find_owned(owner_id, chat_id):
+        return control if owner_id == 900 and chat_id == 555 else None
+
+    monkeypatch.setattr(bot_mod.business_control, 'find_owned_chat', find_owned)
+    for sender in (900, 555):
+        msg = message(
+            business_connection_id=None,
+            text='/start bizChat555',
+            chat={'id': sender, 'type': 'private'},
+            from_user={'id': sender, 'is_bot': False, 'first_name': 'User'},
+        )
+        await dispatch(bot, msg, business=False)
+    sent = [r for r in requests if isinstance(r, SendMessage)]
+    assert sent[0].chat_id == 900
+    assert sent[0].reply_markup is not None
+    assert sent[1].chat_id == 555
+    assert sent[1].reply_markup is None
+
+
+@pytest.mark.asyncio
+async def test_native_send_rejection_does_not_retry_or_mark_read(service, monkeypatch):
+    bot, _, requests, _ = service
+    original = bot.session.make_request
+
+    async def request(bot, method, **kwargs):
+        if isinstance(method, SendMessage):
+            requests.append(method)
+            raise TelegramBadRequest(method=method, message='BUSINESS_PEER_USAGE_MISSING')
+        return await original(bot, method, **kwargs)
+
+    monkeypatch.setattr(bot.session, 'make_request', request)
+    with pytest.raises(TelegramBadRequest):
+        await dispatch(bot, message())
+    assert len([r for r in requests if isinstance(r, SendMessage)]) == 1
     assert not any(isinstance(r, ReadBusinessMessage) for r in requests)

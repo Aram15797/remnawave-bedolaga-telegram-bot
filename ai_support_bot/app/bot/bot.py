@@ -3,20 +3,28 @@ import base64
 import io
 import time
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from html import escape
 
 import structlog
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import BusinessConnection, Message, ReplyParameters
+from aiogram.types import (
+    BusinessConnection,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyParameters,
+)
 
 from ai_support_bot.app.core.config import settings
 from ai_support_bot.app.db import crud
 from ai_support_bot.app.db.database import AsyncSessionLocal
-from ai_support_bot.app.services import alerting, settings_store
+from ai_support_bot.app.services import alerting, business_control, settings_store
 from ai_support_bot.app.services.agent import support_agent
 from ai_support_bot.app.services.openai_client import OpenAIError
 
@@ -37,6 +45,19 @@ _throttle_warned: set[int] = set()
 
 _processed_updates: dict[tuple[str | None, int, int], float] = {}
 _PROCESSED_TTL = 300
+_business_turn: ContextVar[tuple[int, int] | None] = ContextVar('business_turn', default=None)
+
+
+async def _turn_active() -> bool:
+    turn = _business_turn.get()
+    return turn is None or await business_control.active(*turn)
+
+
+def _control_buttons(control_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text='Взять в работу', callback_data=f'aisup:take:{control_id}'),
+        InlineKeyboardButton(text='Вернуть ИИ', callback_data=f'aisup:resume:{control_id}'),
+    ]])
 
 
 def _is_duplicate_update(message: Message) -> bool:
@@ -76,6 +97,8 @@ async def typing_action(bot: Bot, chat_id: int, business_connection_id: str | No
     async def loop():
         try:
             while True:
+                if not await _turn_active():
+                    return
                 options = {'business_connection_id': business_connection_id} if business_connection_id else {}
                 await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, **options)
                 await asyncio.sleep(4)
@@ -110,6 +133,20 @@ async def _download_image_data_url(bot: Bot, file_id: str) -> str | None:
 
 
 async def cmd_start(message: Message) -> None:
+    parts = (message.text or '').split(maxsplit=1)
+    payload = parts[1] if len(parts) == 2 else ''
+    if payload.startswith('bizChat') and payload[7:].isdigit() and message.from_user is not None:
+        control = await business_control.find_owned_chat(message.from_user.id, int(payload[7:]))
+        if control is None:
+            await message.answer('Чат пока не найден. Управление станет доступно после первого сообщения боту в этом чате.')
+            return
+        status = 'приостановлен' if business_control.paused(control) else 'включён'
+        await message.answer(
+            f'ИИ {status} в чате <code>{control.chat_id}</code>.\n'
+            '«Взять в работу» приостанавливает ИИ до нажатия «Вернуть ИИ».',
+            reply_markup=_control_buttons(control.id),
+        )
+        return
     await message.answer(_WELCOME)
 
 
@@ -131,9 +168,19 @@ def _admin_recipients(exclude_telegram_id: int | None = None) -> list[int]:
 
 
 async def _notify_admins(bot: Bot, text: str, exclude_telegram_id: int | None = None, photo: str | None = None) -> None:
-    for admin_id in _admin_recipients(exclude_telegram_id):
+    recipients = set(_admin_recipients(exclude_telegram_id))
+    options = {}
+    turn = _business_turn.get()
+    if turn is not None:
+        control = await business_control.get_by_id(turn[0])
+        if control is not None:
+            options['reply_markup'] = _control_buttons(control.id)
+            if control.owner_id != exclude_telegram_id:
+                recipients.add(control.owner_id)
+            text += f'\n\n<b>Чат обращения:</b> <code>{control.chat_id}</code>'
+    for admin_id in sorted(recipients):
         try:
-            notification = await bot.send_message(admin_id, text, parse_mode='HTML')
+            notification = await bot.send_message(admin_id, text, parse_mode='HTML', **options)
             if photo:
                 await bot.send_photo(
                     admin_id, photo, caption=f'Вложение к обращению пользователя {exclude_telegram_id}',
@@ -143,11 +190,18 @@ async def _notify_admins(bot: Bot, text: str, exclude_telegram_id: int | None = 
             logger.warning('Failed to notify admin', admin_id=admin_id, error=str(err))
 
 
-async def _answer_safely(message: Message, text: str) -> None:
+async def _answer_safely(message: Message, text: str) -> bool:
+    if not await _turn_active():
+        return False
     try:
         await message.answer(text, parse_mode='HTML')
-    except Exception:
+    except TelegramBadRequest as error:
+        if 'parse entities' not in str(error).lower():
+            raise
+        if not await _turn_active():
+            return False
         await message.answer(text.replace('<', '&lt;').replace('>', '&gt;'))
+    return True
 
 
 async def _handle_daily_limit(
@@ -204,17 +258,17 @@ async def handle_message(message: Message, business_connection: BusinessConnecti
         image_url = await _download_image_data_url(bot, message.photo[-1].file_id)
 
     if message.photo and not settings_store.get_bool('VISION_ENABLED') and not question:
-        await message.answer('Анализ изображений сейчас отключён. Опишите вопрос текстом.')
+        await _answer_safely(message, 'Анализ изображений сейчас отключён. Опишите вопрос текстом.')
         return
 
     if not question and not image_url:
-        await message.answer('Пожалуйста, опишите вопрос текстом или пришлите скриншот.')
+        await _answer_safely(message, 'Пожалуйста, опишите вопрос текстом или пришлите скриншот.')
         return
 
     if _throttle_hit(telegram_id):
         if telegram_id not in _throttle_warned:
             _throttle_warned.add(telegram_id)
-            await message.answer('Секунду, я ещё обрабатываю предыдущее сообщение — напишите чуть медленнее. 🙂')
+            await _answer_safely(message, 'Секунду, я ещё обрабатываю предыдущее сообщение — напишите чуть медленнее. 🙂')
         logger.info('Throttled message', telegram_id=telegram_id)
         return
 
@@ -233,16 +287,18 @@ async def handle_message(message: Message, business_connection: BusinessConnecti
                 result = await support_agent.generate_answer(db, telegram_id, question, image_url=image_url, **options)
     except OpenAIError as error:
         logger.error('Generation failed', error=str(error), telegram_id=telegram_id)
-        await message.answer('⚠️ Не удалось получить ответ. Попробуйте позже.')
+        await _answer_safely(message, '⚠️ Не удалось получить ответ. Попробуйте позже.')
         return
     except Exception as error:
         logger.error('Unexpected error', error=str(error), telegram_id=telegram_id)
-        await message.answer('⚠️ Произошла ошибка. Попробуйте позже.')
+        await _answer_safely(message, '⚠️ Произошла ошибка. Попробуйте позже.')
         return
 
     answer = result['answer'] or 'Не удалось сформировать ответ.'
 
-    await _answer_safely(message, answer)
+    if await _answer_safely(message, answer) is False:
+        logger.info('AI answer suppressed: operator took over', chat_id=message.chat.id)
+        return
 
     if (
         not result['escalate']
@@ -250,6 +306,7 @@ async def handle_message(message: Message, business_connection: BusinessConnecti
         and business_connection is not None
         and business_connection.rights
         and business_connection.rights.can_read_messages
+        and await _turn_active()
     ):
         try:
             await bot.read_business_message(
@@ -310,6 +367,11 @@ async def handle_business_message(message: Message) -> None:
         logger.warning('Failed to get business connection', error=str(error))
         return
 
+    control = await business_control.get_chat(connection.id, message.chat.id, connection.user.id)
+    if message.from_user.id == connection.user.id:
+        await business_control.operator_message(control.id, message.date)
+        return
+
     if (
         not connection.is_enabled
         or not connection.rights
@@ -320,7 +382,27 @@ async def handle_business_message(message: Message) -> None:
         return
 
     # Message.answer() retains business_connection_id, including validation/error replies.
-    await handle_message(message, business_connection=connection)
+    if business_control.paused(control) or not (message.text or message.photo or message.caption):
+        return
+    token = _business_turn.set((control.id, control.revision))
+    try:
+        await handle_message(message, business_connection=connection)
+    finally:
+        _business_turn.reset(token)
+
+
+async def handle_control_callback(query: CallbackQuery) -> None:
+    parts = (query.data or '').split(':')
+    if len(parts) != 3 or parts[1] not in {'take', 'resume'} or not parts[2].isdigit():
+        await query.answer('Неизвестная команда', show_alert=True)
+        return
+    control = await business_control.get_by_id(int(parts[2]))
+    if control is None or (query.from_user.id != control.owner_id and query.from_user.id not in settings.admin_ids):
+        await query.answer('Нет доступа к обращению', show_alert=True)
+        return
+    take = parts[1] == 'take'
+    await business_control.set_manual(control.id, take)
+    await query.answer('ИИ приостановлен до нажатия «Вернуть ИИ»' if take else 'ИИ включён для новых сообщений', show_alert=True)
 
 
 def build_dispatcher() -> Dispatcher:
@@ -328,7 +410,8 @@ def build_dispatcher() -> Dispatcher:
     dp.message.register(cmd_start, Command('start'))
     dp.message.register(handle_message, F.text | F.photo | F.caption)
     dp.business_connection.register(handle_business_connection)
-    dp.business_message.register(handle_business_message, F.text | F.photo | F.caption)
+    dp.business_message.register(handle_business_message)
+    dp.callback_query.register(handle_control_callback, F.data.startswith('aisup:'))
     return dp
 
 

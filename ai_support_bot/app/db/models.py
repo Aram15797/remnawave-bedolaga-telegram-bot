@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -108,3 +109,16 @@ class RuntimeSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class BusinessChatControl(Base):
+    __tablename__ = 'business_chat_controls'
+    __table_args__ = (UniqueConstraint('connection_id', 'chat_id'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    connection_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    manual_pause: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    pause_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
