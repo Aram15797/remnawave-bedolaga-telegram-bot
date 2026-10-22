@@ -9,8 +9,9 @@ import structlog
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyParameters
+from aiogram.types import BusinessConnection, Message, ReplyParameters
 
 from ai_support_bot.app.core.config import settings
 from ai_support_bot.app.db import crud
@@ -34,7 +35,7 @@ _limit_user_notified: set[tuple[int, str]] = set()
 _last_message_at: dict[int, float] = {}
 _throttle_warned: set[int] = set()
 
-_processed_updates: dict[int, float] = {}
+_processed_updates: dict[tuple[str | None, int, int], float] = {}
 _PROCESSED_TTL = 300
 
 
@@ -42,7 +43,7 @@ def _is_duplicate_update(message: Message) -> bool:
     message_key = getattr(message, 'message_id', None)
     if message_key is None:
         return False
-    key = (message.chat.id << 24) + message_key
+    key = (getattr(message, 'business_connection_id', None), message.chat.id, message_key)
     now = time.time()
     if len(_processed_updates) > 5000:
         for stale in [k for k, ts in _processed_updates.items() if now - ts > _PROCESSED_TTL]:
@@ -71,14 +72,17 @@ def _throttle_hit(telegram_id: int) -> bool:
 
 
 @asynccontextmanager
-async def typing_action(bot: Bot, chat_id: int):
+async def typing_action(bot: Bot, chat_id: int, business_connection_id: str | None = None):
     async def loop():
         try:
             while True:
-                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+                options = {'business_connection_id': business_connection_id} if business_connection_id else {}
+                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING, **options)
                 await asyncio.sleep(4)
         except asyncio.CancelledError:
             pass
+        except TelegramAPIError as error:
+            logger.warning('Failed to send typing action', error=str(error))
 
     task = asyncio.create_task(loop())
     try:
@@ -182,6 +186,8 @@ async def _handle_daily_limit(
 
 
 async def handle_message(message: Message) -> None:
+    if message.from_user is None:
+        return
     bot = message.bot
     telegram_id = message.from_user.id
 
@@ -221,7 +227,7 @@ async def handle_message(message: Message) -> None:
             return
 
     try:
-        async with typing_action(bot, message.chat.id):
+        async with typing_action(bot, message.chat.id, getattr(message, 'business_connection_id', None)):
             async with AsyncSessionLocal() as db:
                 options = {'media_file_id': message.photo[-1].file_id} if message.photo else {}
                 result = await support_agent.generate_answer(db, telegram_id, question, image_url=image_url, **options)
@@ -261,10 +267,52 @@ async def handle_message(message: Message) -> None:
         await _notify_admins(bot, notify_text, exclude_telegram_id=telegram_id, photo=result.get('support_photo'))
 
 
+async def handle_business_connection(connection: BusinessConnection) -> None:
+    logger.info(
+        'AI support business connection updated',
+        business_connection_id=connection.id,
+        owner_id=connection.user.id,
+        enabled=connection.is_enabled,
+        can_reply=bool(connection.rights and connection.rights.can_reply),
+    )
+
+
+async def handle_business_message(message: Message) -> None:
+    if (
+        not message.business_connection_id
+        or message.chat.type != 'private'
+        or message.from_user is None
+        or message.from_user.is_bot
+        or message.sender_business_bot is not None
+    ):
+        return
+
+    # Fetch current permissions even after a restart or a missed connection update.
+    try:
+        connection = await message.bot.get_business_connection(message.business_connection_id)
+    except TelegramAPIError as error:
+        logger.warning('Failed to get business connection', error=str(error))
+        return
+
+    if (
+        not connection.is_enabled
+        or not connection.rights
+        or not connection.rights.can_reply
+        or message.from_user.id == connection.user.id
+        or message.chat.id == connection.user.id
+    ):
+        return
+
+    # Message.answer() retains business_connection_id, including validation/error replies.
+    await handle_message(message)
+
+
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
     dp.message.register(cmd_start, Command('start'))
     dp.message.register(handle_message, F.text | F.photo | F.caption)
+    dp.business_connection.register(handle_business_connection)
+    dp.business_message.register(handle_business_message, F.text | F.photo | F.caption)
     return dp
 
 
