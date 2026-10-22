@@ -201,5 +201,5 @@ async def answer_request(query: str, language: str = 'ru', ttl_seconds: int = 0)
         blocks.append(block)
     if surface != 'web' and node.available_in_bot:
         path = node_to_dict(tree, node, depth=0)['bot_path']
-        blocks.append('В Telegram: https://t.me/SligVPN_bot?start=ai_support\n' + str(path))
+        blocks.append('<a href="https://t.me/SligVPN_bot?start=ai_support">В Telegram</a>:\n' + str(path))
     return '\n\n'.join(blocks) or None

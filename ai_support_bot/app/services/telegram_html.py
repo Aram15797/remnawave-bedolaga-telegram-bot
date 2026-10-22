@@ -10,10 +10,25 @@ def _bot_deep_link(url: str) -> str:
     return url
 
 
-def _link_in_text(match: re.Match) -> str:
+def _is_service_bot_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme.lower() == 'https'
+            and parsed.netloc.lower() == 't.me'
+            and parsed.path.lower() in {'/sligvpn_bot', '/sligvpn_bot/'}
+        )
+    except ValueError:
+        return False
+
+
+def _link_in_text(match: re.Match, inside_anchor: bool = False) -> str:
     original = match.group()
     url = original.rstrip('.,;!):]')
-    return _bot_deep_link(url) + original[len(url):]
+    if not _is_service_bot_url(url):
+        return escape(original, quote=False)
+    link = 'В Telegram' if inside_anchor else f'<a href="{escape(_bot_deep_link(url), quote=True)}">В Telegram</a>'
+    return link + escape(original[len(url):], quote=False)
 
 
 class _TelegramHTML(HTMLParser):
@@ -50,11 +65,16 @@ class _TelegramHTML(HTMLParser):
                     break
 
     def handle_data(self, data):
-        data = re.sub(r'https://[^\s<>\"\']+', _link_in_text, data, flags=re.IGNORECASE)
-        self.parts.append(escape(data, quote=False))
+        offset = 0
+        for match in re.finditer(r'https://[^\s<>\"\']+', data, flags=re.IGNORECASE):
+            self.parts.append(escape(data[offset:match.start()], quote=False))
+            self.parts.append(_link_in_text(match, inside_anchor='a' in self.stack or 'code' in self.stack))
+            offset = match.end()
+        self.parts.append(escape(data[offset:], quote=False))
 
 
 def sanitize_telegram_html(text: str) -> str:
+    text = re.sub(r'<code>\s*(https://[^\s<>]+)\s*</code>', r'\1', text, flags=re.IGNORECASE)
     parser = _TelegramHTML()
     parser.feed(text)
     parser.close()
