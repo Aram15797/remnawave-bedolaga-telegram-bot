@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import GetBusinessConnection, SendChatAction, SendMessage
+from aiogram.methods import GetBusinessConnection, ReadBusinessMessage, SendChatAction, SendMessage
 from aiogram.types import BusinessConnection, Message, Update
 
 
@@ -31,7 +31,7 @@ def service(monkeypatch):
         user_chat_id=900,
         date=datetime.now(UTC),
         is_enabled=True,
-        rights={'can_reply': True},
+        rights={'can_reply': True, 'can_read_messages': True},
     )
     requests = []
 
@@ -39,7 +39,7 @@ def service(monkeypatch):
         requests.append(method)
         if isinstance(method, GetBusinessConnection):
             return connection
-        if isinstance(method, SendChatAction):
+        if isinstance(method, (SendChatAction, ReadBusinessMessage)):
             return True
         return Message(
             message_id=100,
@@ -97,6 +97,10 @@ async def test_business_answer_and_typing_use_connection_and_customer_identity(s
     sent = [r for r in requests if isinstance(r, (SendMessage, SendChatAction))]
     assert len(sent) == 2
     assert all(r.chat_id == 555 and r.business_connection_id == 'business-1' for r in sent)
+    reads = [r for r in requests if isinstance(r, ReadBusinessMessage)]
+    assert len(reads) == 1
+    assert (reads[0].business_connection_id, reads[0].chat_id, reads[0].message_id) == ('business-1', 555, 1)
+    assert requests.index(reads[0]) > next(i for i, r in enumerate(requests) if isinstance(r, SendMessage))
 
 
 @pytest.mark.asyncio
@@ -162,6 +166,7 @@ async def test_business_escalation_admin_notification_uses_regular_bot(service):
     await dispatch(bot, message())
     sent = [r for r in requests if isinstance(r, SendMessage)]
     assert [(r.chat_id, r.business_connection_id) for r in sent] == [(555, 'business-1'), (999, None)]
+    assert not any(isinstance(r, ReadBusinessMessage) for r in requests)
 
 
 @pytest.mark.asyncio
@@ -180,6 +185,7 @@ async def test_business_validation_and_error_replies_keep_connection(service, mo
     assert len(sent) == 1
     assert sent[0].chat_id == 555
     assert sent[0].business_connection_id == 'business-1'
+    assert not any(isinstance(r, ReadBusinessMessage) for r in requests)
 
 
 @pytest.mark.asyncio
@@ -201,3 +207,67 @@ async def test_connection_updates_registered(service):
     assert {'message', 'business_message', 'business_connection'} <= set(dp.resolve_used_update_types())
     await dp.feed_update(bot, Update(update_id=1, business_connection=connection))
     agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_escalation_mid_dialogue_leaves_last_message_unread(service):
+    bot, _, requests, agent = service
+    await dispatch(bot, message(message_id=1))
+    agent.side_effect = None
+    agent.return_value = {'answer': 'Передаю оператору', 'escalate': True}
+    await dispatch(bot, message(message_id=2, text='Позовите оператора'))
+    assert [r.message_id for r in requests if isinstance(r, ReadBusinessMessage)] == [1]
+    assert agent.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_answer_without_read_permission_still_delivered(service, monkeypatch):
+    bot, connection, requests, _ = service
+    connection = connection.model_copy(
+        update={'rights': connection.rights.model_copy(update={'can_read_messages': False})}
+    )
+    monkeypatch.setattr(bot, 'get_business_connection', AsyncMock(return_value=connection))
+    await dispatch(bot, message())
+    assert any(isinstance(r, SendMessage) for r in requests)
+    assert not any(isinstance(r, ReadBusinessMessage) for r in requests)
+
+
+@pytest.mark.asyncio
+async def test_read_failure_does_not_repeat_answer_or_escalate(service, monkeypatch):
+    bot, _, requests, _ = service
+    read = AsyncMock(
+        side_effect=TelegramBadRequest(
+            method=ReadBusinessMessage(business_connection_id='business-1', chat_id=555, message_id=1),
+            message='Permission revoked',
+        )
+    )
+    monkeypatch.setattr(bot, 'read_business_message', read)
+    await dispatch(bot, message())
+    read.assert_awaited_once_with(business_connection_id='business-1', chat_id=555, message_id=1)
+    assert [r.chat_id for r in requests if isinstance(r, SendMessage)] == [555]
+
+
+@pytest.mark.asyncio
+async def test_failed_answer_delivery_does_not_mark_message_read(service, monkeypatch):
+    bot, _, requests, _ = service
+    monkeypatch.setattr(
+        bot_mod,
+        '_answer_safely',
+        AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=SendMessage(chat_id=555, text='Ответ'),
+                message='Chat unavailable',
+            )
+        ),
+    )
+    with pytest.raises(TelegramBadRequest):
+        await dispatch(bot, message())
+    assert not any(isinstance(r, ReadBusinessMessage) for r in requests)
+
+
+@pytest.mark.asyncio
+async def test_regular_chat_does_not_use_business_read_api(service):
+    bot, _, requests, _ = service
+    await dispatch(bot, message(business_connection_id=None), business=False)
+    assert any(isinstance(r, SendMessage) for r in requests)
+    assert not any(isinstance(r, ReadBusinessMessage) for r in requests)

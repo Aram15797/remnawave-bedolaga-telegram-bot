@@ -185,7 +185,7 @@ async def _handle_daily_limit(
     logger.info('Daily AI support limit reached', telegram_id=telegram_id, used=used_today, limit=limit)
 
 
-async def handle_message(message: Message) -> None:
+async def handle_message(message: Message, business_connection: BusinessConnection | None = None) -> None:
     if message.from_user is None:
         return
     bot = message.bot
@@ -243,6 +243,22 @@ async def handle_message(message: Message) -> None:
     answer = result['answer'] or 'Не удалось сформировать ответ.'
 
     await _answer_safely(message, answer)
+
+    if (
+        not result['escalate']
+        and result['answer']
+        and business_connection is not None
+        and business_connection.rights
+        and business_connection.rights.can_read_messages
+    ):
+        try:
+            await bot.read_business_message(
+                business_connection_id=business_connection.id,
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+        except TelegramAPIError as error:
+            logger.warning('Failed to mark business message as read', error=str(error), chat_id=message.chat.id)
 
     if result['escalate']:
         logger.info(
@@ -304,7 +320,7 @@ async def handle_business_message(message: Message) -> None:
         return
 
     # Message.answer() retains business_connection_id, including validation/error replies.
-    await handle_message(message)
+    await handle_message(message, business_connection=connection)
 
 
 def build_dispatcher() -> Dispatcher:

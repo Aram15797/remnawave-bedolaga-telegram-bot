@@ -1,8 +1,26 @@
 import re
 
 
+def is_subscription_refresh(query: str) -> bool:
+    text = query.casefold()
+    text = re.sub(r'\bне\s+(?:хочу\s+)?продл\w*', '', text)
+    return bool(
+        re.search(r'обнов(?:ить|лять|ление|и(?:те)?)\b|синхрониз\w*', text)
+        and re.search(r'подписк|спис\w* сервер', text)
+        and not re.search(r'продл', text)
+    )
+
+
+def is_context_followup(question: str) -> bool:
+    return question.strip().casefold().rstrip('?.!') in {
+        'как', 'а как', 'как это сделать', 'как именно', 'что делать', 'не понял', 'не поняла', 'непонятно',
+    }
+
+
 def navigation_target(query: str) -> str | None:
     text = query.casefold()
+    if is_subscription_refresh(query):
+        return None
     if re.search(r'колес|вращен|выигранн', text):
         return 'web_wheel_history'
     if re.search(r'промокод|промик', text):

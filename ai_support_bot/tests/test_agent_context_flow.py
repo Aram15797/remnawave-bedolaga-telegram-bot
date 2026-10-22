@@ -805,3 +805,23 @@ async def test_explicit_new_question_works_for_every_support_topic(flow, old_que
         assert active.id != old_id
     assert result['answer'] == 'Напишите ваш новый вопрос.'
     assert not result['escalate']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('question', [
+    'как',
+    'как обновить подписку',
+    'я хочу не продлить, а обновить, вы же сказали мне обновить подписку выше',
+])
+async def test_subscription_refresh_clarification_retains_dialogue_and_refresh_policy(flow, question):
+    captured, agent_mod, session_factory = flow
+    captured['reply'] = 'Обновите подписку в VPN-приложении.'
+    async with session_factory() as db:
+        await agent_mod.support_agent.generate_answer(db, 4242, 'Не работают белые списки')
+    captured['reply'] = 'В каком VPN-приложении вы хотите обновить список серверов?'
+    async with session_factory() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, question)
+    assert result['answer'] == captured['reply']
+    assert any(m['role'] == 'user' and m['content'] == 'Не работают белые списки' for m in captured['messages'])
+    assert any(m['role'] == 'assistant' and 'Обновите подписку' in m['content'] for m in captured['messages'])
+    assert 'Не подменяй обновление продлением или оплатой' in captured['prompts'][-1]

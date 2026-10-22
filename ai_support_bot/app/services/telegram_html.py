@@ -4,6 +4,18 @@ from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 
+def _bot_deep_link(url: str) -> str:
+    if re.fullmatch(r'https://t\.me/SligVPN_bot/?', url, flags=re.IGNORECASE):
+        return 'https://t.me/SligVPN_bot?start=ai_support'
+    return url
+
+
+def _link_in_text(match: re.Match) -> str:
+    original = match.group()
+    url = original.rstrip('.,;!):]')
+    return _bot_deep_link(url) + original[len(url):]
+
+
 class _TelegramHTML(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -16,7 +28,7 @@ class _TelegramHTML(HTMLParser):
             self.parts.append(f'<{tag}>')
             self.stack.append(tag)
         elif tag == 'a':
-            href = dict(attrs).get('href') or ''
+            href = _bot_deep_link(dict(attrs).get('href') or '')
             try:
                 parsed = urlsplit(href)
                 valid = parsed.scheme == 'https' and parsed.hostname and not parsed.username and not any(ord(c) < 32 for c in href)
@@ -38,6 +50,7 @@ class _TelegramHTML(HTMLParser):
                     break
 
     def handle_data(self, data):
+        data = re.sub(r'https://[^\s<>\"\']+', _link_in_text, data, flags=re.IGNORECASE)
         self.parts.append(escape(data, quote=False))
 
 

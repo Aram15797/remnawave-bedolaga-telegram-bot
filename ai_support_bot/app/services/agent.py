@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_support_bot.app.core.config import DEFAULT_SYSTEM_PROMPT, ESCALATION_MARKER
 from ai_support_bot.app.db import crud
 from ai_support_bot.app.navigation import tool as navigation_tool
-from ai_support_bot.app.navigation.query import contextual_navigation_query
+from ai_support_bot.app.navigation.query import contextual_navigation_query, is_context_followup
 from ai_support_bot.app.services import settings_store
 from ai_support_bot.app.services.dialogue_tools import (
     SUPPORT_TOOLS,
@@ -377,7 +377,7 @@ class SupportAgent:
             if switched_question:
                 question = switched_question
             smalltalk = _is_smalltalk(question) and not image_url
-        if history and question.strip().casefold() in {'да', 'нет', 'ага', 'угу'}:
+        if history and (is_context_followup(question) or question.strip().casefold() in {'да', 'нет', 'ага', 'угу'}):
             smalltalk = False
 
         forced_reason = mandatory_handoff(question, history)

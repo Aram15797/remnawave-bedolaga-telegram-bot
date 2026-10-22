@@ -160,3 +160,50 @@ def test_followups_keep_their_topic_without_payment_state(old, followup):
 
     history = [SimpleNamespace(role='user', content=old)]
     assert not starts_new_topic(followup, history, {'issue': 'other'})
+
+
+@pytest.mark.parametrize('text', [
+    'Откройте https://t.me/SligVPN_bot',
+    'Откройте https://t.me/SligVPN_bot/.',
+    '<a href="https://t.me/SligVPN_bot">Бот</a>',
+    '<code>https://t.me/SligVPN_bot</code>',
+])
+def test_support_bot_links_include_start(text):
+    assert 'https://t.me/SligVPN_bot?start=ai_support' in sanitize_telegram_html(text)
+
+
+@pytest.mark.parametrize('url', [
+    'https://t.me/SligVPN_bot?start=ref_123',
+    'https://t.me/SligVPN_bot?startapp=subscription',
+    'https://t.me/SligVPN_bot/123',
+    'https://t.me/SligVPN_bot_other',
+    'https://t.me/SligVPN_bot.evil.example',
+    'https://web.slig.app/subscriptions',
+])
+def test_start_normalization_preserves_existing_deep_links_and_other_urls(url):
+    assert sanitize_telegram_html(url) == url
+    assert sanitize_telegram_html(f'<a href="{url}">Бот</a>') == f'<a href="{url}">Бот</a>'
+
+
+@pytest.mark.parametrize('question', [
+    'как обновить подписку',
+    'я хочу не продлить, а обновить, вы же сказали мне обновить подписку выше',
+    'Как обновить список серверов?',
+])
+def test_refresh_request_does_not_route_to_paid_renewal(question):
+    assert navigation_target(question) is None
+
+
+def test_explicit_renewal_still_routes_to_renewal():
+    assert navigation_target('Как продлить подписку?') == 'subscription_extend'
+
+
+@pytest.mark.parametrize('question', ['как', 'А как?', 'Как это сделать?', 'Не понял'])
+def test_short_clarification_preserves_topic(question):
+    from ai_support_bot.app.services.response_rules import starts_new_topic
+
+    history = [
+        SimpleNamespace(role='user', content='Не работают белые списки'),
+        SimpleNamespace(role='assistant', content='Обновите подписку в VPN-приложении.'),
+    ]
+    assert not starts_new_topic(question, history, {})

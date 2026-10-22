@@ -1,7 +1,12 @@
 import re
 from decimal import Decimal
 
-from ai_support_bot.app.navigation.query import is_channel_followup, navigation_target
+from ai_support_bot.app.navigation.query import (
+    is_channel_followup,
+    is_context_followup,
+    is_subscription_refresh,
+    navigation_target,
+)
 
 
 NOTICE = 'Передаю обращение команде для проверки, подождите, пожалуйста.'
@@ -36,6 +41,8 @@ def starts_unrelated_question(question: str) -> bool:
 
 def conversation_topic(question: str) -> str | None:
     text = question.casefold()
+    if is_subscription_refresh(question):
+        return 'vpn'
     if is_payment_missing(question) or re.search(r'воз\w*рат.*(?:денег|средств)|верн\w*.*деньг|оплат|плат[её]ж|списал', text):
         return 'payment'
     if re.search(r'сотрудничеств|предложени\w*\s+(?:о\s+)?реклам', text):
@@ -49,7 +56,7 @@ def conversation_topic(question: str) -> str | None:
         }.get(target, target)
     if re.search(r'каки\w* приложени|како\w* (?:приложени|клиент)|что скачать|приложени\w* скачать', text) or starts_technical_issue(question):
         return 'vpn'
-    if re.search(r'скорост|качеств|тормоз|медленно', text):
+    if re.search(r'скорост|качеств|тормоз|медленно|бел\w*\s+списк', text):
         return 'vpn'
     if re.search(r'лимит.*устройств|сколько.*устройств|удал\w*.*устройств', text) and re.search(r'\?|как|сколько|нужно|удал|ошибк', text):
         return 'devices'
@@ -61,7 +68,7 @@ def conversation_topic(question: str) -> str | None:
 
 
 def starts_new_topic(question: str, history: list, state: dict) -> bool:
-    if is_channel_followup(question) or re.search(r'\b(?:это|этим|этот|эта|этой|его|её|ее|там|тогда)\b|вс[её] равно', question, re.IGNORECASE):
+    if is_context_followup(question) or is_channel_followup(question) or re.search(r'\b(?:это|этим|этот|эта|этой|его|её|ее|там|тогда)\b|вс[её] равно', question, re.IGNORECASE):
         return False
     current = conversation_topic(question)
     previous = 'payment' if state.get('issue') == 'payment_missing' else next(
