@@ -1,5 +1,7 @@
 import re
 from decimal import Decimal
+from difflib import SequenceMatcher
+from html import unescape
 
 from ai_support_bot.app.navigation.query import (
     is_channel_followup,
@@ -128,6 +130,8 @@ def smalltalk_answer(question: str) -> str | None:
 
 def mandatory_handoff(question: str, history: list) -> str | None:
     text = question.casefold()
+    if subscription_restricted(question):
+        return 'subscription_restricted'
     if re.fullmatch(r'\s*(?:человек|оператор|админ)[!.?\s]*', text):
         return 'human'
     human = re.search(r'(?:позов\w*|зови|свяж\w*|соедин\w*|подключ\w*|хочу поговорить|нужен|нужна)\s+(?:меня\s+)?(?:с\s+)?(?:жив\w*\s+)?(?:человек\w*|оператор\w*|админ\w*|поддержк\w*)', text)
@@ -150,6 +154,35 @@ def mandatory_handoff(question: str, history: list) -> str | None:
     if technical and failed and (actions >= 2 or re.search(r'вс[её]\s+(?:это\s+)?(?:уже\s+)?(?:пробовал|сделал)', text)):
         return 'diagnostics_failed'
     return None
+
+
+def subscription_restricted(text: str) -> bool:
+    return bool(re.search(r'подписк\w*\s+(?:(?:временно|сейчас)\s+)?(?:ограничена|заблокирована)\b', text, re.IGNORECASE))
+
+
+def repeated_diagnostics(answer: str, question: str, history: list, has_image: bool = False) -> bool:
+    if re.search(r'\bповтори(?:те)?\b|ещ[её] раз.*(?:инструкц|шаг)', question, re.IGNORECASE):
+        return False
+    if not has_image and not re.search(r'не работает|не помог\w*|не заработал|та же ошибк|вс[её] равно', question, re.IGNORECASE):
+        return False
+    previous = next((item.content or '' for item in reversed(history) if item.role == 'assistant'), '')
+    if not previous or not re.search(r'vpn|впн|сервер|incy|happ|приложени|подключ', previous + ' ' + question, re.IGNORECASE):
+        return False
+
+    def normalized(text):
+        return ' '.join(re.findall(r'[а-яёa-z0-9]+', unescape(re.sub(r'<[^>]*>', '', text)).casefold()))
+
+    current, prior = normalized(answer), normalized(previous)
+    if len(current) >= 60 and SequenceMatcher(None, current, prior).ratio() >= 0.82:
+        return True
+    actions = (
+        r'перезапуст|перезагруз', r'обнов\w*.*(?:сервер|подписк)|(?:сервер|подписк).*обнов',
+        r'(?:друг\w*|смен\w*|выбер\w*).*сервер', r'wi.?fi|мобильн\w* сет|сотов\w*',
+        r'импорт|заново добав|повторно добав', r'переустанов',
+    )
+    current_actions = {i for i, pattern in enumerate(actions) if re.search(pattern, current)}
+    prior_actions = {i for i, pattern in enumerate(actions) if re.search(pattern, prior)}
+    return len(current_actions) >= 2 and current_actions <= prior_actions
 
 
 def handoff_answer(reason: str, question: str) -> str:

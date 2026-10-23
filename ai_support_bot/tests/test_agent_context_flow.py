@@ -825,3 +825,44 @@ async def test_subscription_refresh_clarification_retains_dialogue_and_refresh_p
     assert any(m['role'] == 'user' and m['content'] == 'Не работают белые списки' for m in captured['messages'])
     assert any(m['role'] == 'assistant' and 'Обновите подписку' in m['content'] for m in captured['messages'])
     assert 'Не подменяй обновление продлением или оплатой' in captured['prompts'][-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_photo', [False, True])
+async def test_repeated_diagnostics_become_handoff_with_attachment(flow, with_photo):
+    captured, agent_mod, Session = flow
+    captured['reply'] = 'В Incy обновите список серверов, выберите другой сервер, перезапустите iPhone.'
+    async with Session() as db:
+        first = await agent_mod.support_agent.generate_answer(db, 4242, 'Incy на iPhone не работает, HTTP 502')
+    assert not first['escalate']
+    captured['reply'] = 'Обновите подписку в Incy. Выберите другой сервер. Перезагрузите iPhone и пришлите ещё скриншот.'
+    options = {'image_url': 'data:image/png;base64,AA==', 'media_file_id': 'repeat-photo'} if with_photo else {}
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, '' if with_photo else 'не работает', **options)
+    assert result['escalate']
+    assert result['escalation_reason'] == 'repeated_diagnostics'
+    assert result['answer'] == agent_mod.NOTICE
+    if with_photo:
+        assert result['support_photo'] == 'repeat-photo'
+
+
+@pytest.mark.asyncio
+async def test_model_restriction_without_escalation_marker_still_hands_off(flow):
+    captured, agent_mod, Session = flow
+    captured['reply'] = 'На скриншоте: Подписка ограничена. Обновите список серверов и перезапустите телефон.'
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'iPhone Incy', image_url='data:image/png;base64,AA==')
+    assert result['escalate']
+    assert result['escalation_reason'] == 'subscription_restricted'
+    assert 'перезапустите' not in result['answer']
+    assert 'Подписка ограничена' in captured['prompts'][-1]
+
+
+@pytest.mark.asyncio
+async def test_reported_subscription_restriction_skips_generic_diagnostics(flow):
+    captured, agent_mod, Session = flow
+    async with Session() as db:
+        result = await agent_mod.support_agent.generate_answer(db, 4242, 'В Incy написано: подписка ограничена')
+    assert result['escalate']
+    assert result['escalation_reason'] == 'subscription_restricted'
+    assert not captured['prompts']

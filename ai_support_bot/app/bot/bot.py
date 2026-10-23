@@ -327,6 +327,10 @@ async def handle_message(message: Message, business_connection: BusinessConnecti
         reason = 'ИИ не уверен в ответе (нет данных в базе знаний)' if result.get('hedged') else (
             'передача по запросу пользователя или правилам поддержки' if result.get('answer_source') == 'rules' else 'запрошено моделью'
         )
+        reason = {
+            'repeated_diagnostics': 'ИИ повторяет уже предложенную диагностику без нового решения',
+            'subscription_restricted': 'сообщение об ограничении или блокировке подписки',
+        }.get(result.get('escalation_reason'), reason)
         notify_text = (
             '⚠️ <b>Внимание: Обращение требует внимания оператора!</b>\n\n'
             f'<b>Пользователь:</b> <a href="tg://user?id={telegram_id}">{user_name}</a>{username_str} '

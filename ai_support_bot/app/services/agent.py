@@ -36,9 +36,11 @@ from ai_support_bot.app.services.response_rules import (
     keeps_account_scope,
     mandatory_handoff,
     payment_next_step,
+    repeated_diagnostics,
     smalltalk_answer,
     starts_new_topic,
     starts_technical_issue,
+    subscription_restricted,
     topic_switch_question,
     unsupported_price,
 )
@@ -532,6 +534,14 @@ class SupportAgent:
         if not forced_reason and not direct_answer and support_state.get('issue') == 'payment_missing':
             answer_text, escalate = payment_next_step(support_state)
         answer_text = deduplicate_answer(strip_escalation_marker(answer_text))
+        escalation_reason = forced_reason
+        if not escalate and subscription_restricted(answer_text):
+            escalation_reason = 'subscription_restricted'
+            answer_text, escalate = NOTICE, True
+        if not escalate and repeated_diagnostics(answer_text, question, history, has_image=bool(image_url)):
+            escalation_reason = 'repeated_diagnostics'
+            answer_text, escalate = NOTICE, True
+            logger.info('Repeated troubleshooting replaced with handoff', telegram_id=telegram_id)
         if not answer_text:
             answer_text = NOTICE
             escalate = True
@@ -594,6 +604,7 @@ class SupportAgent:
         return {
             'answer': answer_text,
             'escalate': escalate,
+            'escalation_reason': escalation_reason,
             'hedged': hedged,
             'knowledge_used': len(knowledge),
             'model': model_used,

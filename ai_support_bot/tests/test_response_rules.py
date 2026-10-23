@@ -222,3 +222,35 @@ def test_bot_start_parameter_is_hidden_in_link_target(text):
 def test_bot_link_preserves_query_escaping_and_surrounding_punctuation():
     text = 'Бот (https://t.me/SligVPN_bot?start=ref_123&x=1).'
     assert sanitize_telegram_html(text) == 'Бот (<a href="https://t.me/SligVPN_bot?start=ref_123&amp;x=1">https://t.me/SligVPN_bot</a>).'
+
+
+@pytest.mark.parametrize('followup', ['не работает', 'Не помогло', 'Та же ошибка 502'])
+def test_rephrased_troubleshooting_loop_requires_handoff(followup):
+    from ai_support_bot.app.services.response_rules import repeated_diagnostics
+
+    history = [SimpleNamespace(role='assistant', content=(
+        'В Incy обновите список серверов. Выберите другой сервер. Перезапустите iPhone. '
+        'Если не поможет, пришлите скриншот.'
+    ))]
+    candidate = 'Перезагрузите iPhone, обновите подписку в Incy и выберите другой сервер. Пришлите скрин.'
+    assert repeated_diagnostics(candidate, followup, history)
+
+
+@pytest.mark.parametrize(('question', 'candidate', 'has_image'), [
+    ('Как обновить список?', 'Обновите подписку в Incy и выберите другой сервер.', False),
+    ('Повторите инструкцию', 'Обновите подписку в Incy и выберите другой сервер.', True),
+    ('Не работает', 'Попробуйте Wi-Fi вместо мобильной сети и заново импортируйте подписку.', False),
+    ('Спасибо, всё работает', 'Обновите подписку в Incy и выберите другой сервер.', False),
+])
+def test_repeat_guard_allows_explanations_new_steps_and_success(question, candidate, has_image):
+    from ai_support_bot.app.services.response_rules import repeated_diagnostics
+
+    history = [SimpleNamespace(role='assistant', content='Обновите подписку в Incy и выберите другой сервер.')]
+    assert not repeated_diagnostics(candidate, question, history, has_image=has_image)
+
+
+@pytest.mark.parametrize('text', ['Подписка не ограничена', 'Как обновить подписку?', 'Ошибка HTTP 502'])
+def test_other_subscription_messages_do_not_force_restriction_handoff(text):
+    from ai_support_bot.app.services.response_rules import subscription_restricted
+
+    assert not subscription_restricted(text)
